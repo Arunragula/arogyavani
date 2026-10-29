@@ -1,0 +1,57 @@
+<!-- frontend/login.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Sign In or Try as Guest — CuraVault AI</title>
+  <link rel="icon" href="/assets/images/logo.svg" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <header class="top-header">
+    <div class="container header-inner">
+      <a href="/" class="brand-link">
+        <img src="/assets/images/logo.svg" alt="Logo" class="brand-logo" />
+        <span>CuraVault<span class="brand-accent">AI</span></span>
+      </a>
+      <a href="/" class="btn btn-outline">← Home</a>
+    </div>
+  </header>
+
+  <main class="container" style="max-width:440px; padding-top:40px;">
+    <div class="card space-y">
+      <div style="text-align:center;">
+        <h1 style="font-size:1.5rem; font-weight:800;">Welcome to CuraVault AI</h1>
+        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:4px;">Try instantly as a Guest or sign in to your Family Vault</p>
+      </div>
+
+      <div style="background:var(--primary-soft); border:1.5px solid var(--primary-light); border-radius:16px; padding:16px; text-align:center;" class="space-y">
+        <span class="badge badge-teal">Instant Trial • No Signup Required</span>
+        <p style="font-size:0.8rem; color:#334155;">Scan a blood report, decode a prescription, or ask a health question right now.</p>
+        <button onclick="startGuestSession()" class="btn btn-primary" style="width:100%; padding:13px;">
+          <i data-lucide="zap" style="width:16px;height:16px;"></i> Continue as Guest
+        </button>
+      </div>
+
+      <form onsubmit="signInWithProfile(event)" class="space-y" style="padding-top:8px; border-top:1px solid var(--border);">
+        <div>
+          <label style="font-size:0.78rem; font-weight:700;">Your Name</label>
+          <input id="loginName" type="text" required placeholder="e.g., Rahul Sharma" class="input-field" style="margin-top:4px;" />
+        </div>
+        <div>
+          <label style="font-size:0.78rem; font-weight:700;">Email Address</label>
+          <input id="loginEmail" type="email" required placeholder="you@example.com" class="input-field" style="margin-top:4px;" />
+        </div>
+        <button type="submit" class="btn btn-outline" style="width:100%; padding:12px; background:#0F172A; color:#fff;">
+          Sign In to Family Vault
+        </button>
+      </form>
+    </div>
+  </main>
+
+  <script src="/assets/js/auth.js"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

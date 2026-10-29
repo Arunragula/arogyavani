@@ -1,0 +1,121 @@
+<!-- frontend/about.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>About & Privacy Architecture — CuraVault AI</title>
+  <link rel="icon" href="/assets/images/logo.svg" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+  <header class="top-header">
+    <div class="container header-inner">
+      <a href="/" class="brand-link">
+        <img src="/assets/images/logo.svg" alt="Logo" class="brand-logo" />
+        <span>CuraVault<span class="brand-accent">AI</span></span>
+      </a>
+      <nav class="desktop-nav">
+        <a href="/">Home</a>
+        <a href="/about" class="active">About & Privacy</a>
+        <a href="/contact">Contact</a>
+      </nav>
+      <button onclick="startGuestSession()" class="btn btn-primary">Open App</button>
+    </div>
+  </header>
+
+  <main class="container-narrow space-y" style="padding-top:36px;">
+    <!-- Mission Hero -->
+    <div class="card space-y" style="background: linear-gradient(135deg, #0F766E 0%, #0284C7 100%); color:#fff; border:none;">
+      <span class="badge" style="background:rgba(255,255,255,0.2); color:#fff;">Why We Built CuraVault AI</span>
+      <h1 style="font-size:clamp(1.6rem, 3.5vw, 2.3rem); font-weight:800; line-height:1.2;">
+        Medical Reports Are Written for Doctors. We Translate Them for Families—Privately.
+      </h1>
+      <p style="font-size:0.95rem; opacity:0.92; line-height:1.6;">
+        Across India, the Middle East, and Europe, millions of patients walk out of labs and pharmacies holding papers filled with abbreviations like <em>NAD, R.B.S, LFT, TPHA, BD,</em> and <em>TDS</em>. 
+        Most people either worry in silence or blindly swallow tablets without knowing what molecule is inside.
+      </p>
+    </div>
+
+    <!-- 4-Step Privacy Architecture -->
+    <div class="card space-y">
+      <span class="badge badge-teal">Zero-Trust Privacy Shield</span>
+      <h2 style="font-size:1.35rem; font-weight:800;">How We Protect Your Personal Identity</h2>
+      <p style="font-size:0.88rem; color:var(--text-muted);">
+        When you upload a medical PDF or photo directly to general chatbots, your full Name, Phone Number, Passport/UHID, Address, and Doctor details are exposed. CuraVault AI solves this with a 4-stage pipeline:
+      </p>
+
+      <div class="grid-2" style="margin-top:12px;">
+        <div style="padding:16px; border-radius:14px; background:#F8FAFC; border:1px solid var(--border);">
+          <strong style="color:var(--primary-dark); font-size:0.85rem;">Step 1: Local Table Extraction</strong>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">We extract only the text and table alignment locally without sending your raw high-res document pixels to third parties.</p>
+        </div>
+        <div style="padding:16px; border-radius:14px; background:#F8FAFC; border:1px solid var(--border);">
+          <strong style="color:var(--primary-dark); font-size:0.85rem;">Step 2: Personal Identifier Scrubbing</strong>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">Patient Names, Doctor Names, Phone/Fax Numbers, Emails, Clinics, and IDs are automatically masked.</p>
+        </div>
+        <div style="padding:16px; border-radius:14px; background:#F8FAFC; border:1px solid var(--border);">
+          <strong style="color:var(--primary-dark); font-size:0.85rem;">Step 3: Anonymous Clinical Context</strong>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">Only anonymous Age & Gender (e.g., <em>23 Years, Male</em>) are kept so the AI can match accurate healthy human reference ranges.</p>
+        </div>
+        <div style="padding:16px; border-radius:14px; background:#F8FAFC; border:1px solid var(--border);">
+          <strong style="color:var(--primary-dark); font-size:0.85rem;">Step 4: Locked Multi-Language Vault</strong>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:4px;">Your report is fingerprinted so switching between English, Hindi, Telugu, Tamil, or Arabic always gives 100% consistent medical facts.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comparison Table -->
+    <div class="card space-y">
+      <h2 style="font-size:1.25rem; font-weight:800;">Why Families Choose CuraVault AI Over General Chatbots</h2>
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem; text-align:left;">
+          <thead>
+            <tr style="border-bottom:2px solid var(--border); color:var(--text-muted);">
+              <th style="padding:10px 8px;">Feature</th>
+              <th style="padding:10px 8px;">General AI Chatbots</th>
+              <th style="padding:10px 8px; color:var(--primary-dark);">CuraVault AI</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px 8px; font-weight:700;">Personal Names & Phones</td>
+              <td style="padding:10px 8px; color:var(--danger);">Sent raw in image/PDF</td>
+              <td style="padding:10px 8px; color:var(--success); font-weight:700;">✓ Scrubbed before AI analysis</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px 8px; font-weight:700;">Side-by-Side Healthy Range</td>
+              <td style="padding:10px 8px;">Long paragraphs of text</td>
+              <td style="padding:10px 8px; color:var(--success); font-weight:700;">✓ Visual cards for every test</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:10px 8px; font-weight:700;">Per-Card Regional Voice</td>
+              <td style="padding:10px 8px;">Not built for elders</td>
+              <td style="padding:10px 8px; color:var(--success); font-weight:700;">✓ Tap any card to listen in 10+ languages</td>
+            </tr>
+            <tr>
+              <td style="padding:10px 8px; font-weight:700;">Family Health Timeline</td>
+              <td style="padding:10px 8px;">Lost in messy chat threads</td>
+              <td style="padding:10px 8px; color:var(--success); font-weight:700;">✓ Organized profiles for Self, Mom & Dad</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <nav class="mobile-bottom-nav">
+    <div class="mobile-nav-grid">
+      <a href="/" class="mobile-nav-item"><i data-lucide="home" style="width:20px;height:20px;"></i><span>Home</span></a>
+      <button onclick="startGuestSession()" class="mobile-nav-item"><i data-lucide="scan-line" style="width:20px;height:20px;"></i><span>Open App</span></button>
+      <a href="/about" class="mobile-nav-item active"><i data-lucide="shield" style="width:20px;height:20px;"></i><span>Privacy</span></a>
+      <a href="/contact" class="mobile-nav-item"><i data-lucide="mail" style="width:20px;height:20px;"></i><span>Contact</span></a>
+    </div>
+  </nav>
+
+  <script src="/assets/js/auth.js"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

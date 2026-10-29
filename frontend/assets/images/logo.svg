@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Curavault healthcare logo</title>
+  <desc id="desc">A teal medical cross, navy stethoscope, and supportive teal hand beside the Curavault wordmark.</desc>
+  <defs>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2DBFA7"/>
+      <stop offset="1" stop-color="#079DA7"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#164A83"/>
+      <stop offset="1" stop-color="#102E55"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="420" fill="#FFFFFF"/>
+  <!-- Medical cross -->
+  <path d="M150 62h62a18 18 0 0 1 18 18v43h43a18 18 0 0 1 18 18v62a18 18 0 0 1-18 18h-43v43a18 18 0 0 1-18 18h-62a18 18 0 0 1-18-18v-43H89a18 18 0 0 1-18-18v-62a18 18 0 0 1 18-18h43V80a18 18 0 0 1 18-18z" fill="url(#teal)"/>
+  <!-- Stethoscope -->
+  <path d="M145 111v43c0 37 19 59 44 59s44-22 44-59v-20" fill="none" stroke="url(#blue)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M145 111v22M233 134v-12" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="233" cy="154" r="17" fill="#FFFFFF" stroke="url(#blue)" stroke-width="9"/>
+  <path d="M189 213v27c0 24 15 37 35 37h17" fill="none" stroke="url(#blue)" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="254" cy="277" r="14" fill="#FFFFFF" stroke="url(#blue)" stroke-width="9"/>
+  <!-- Supportive hand -->
+  <path d="M66 267c20 5 37 18 56 22l47 10c11 2 17 10 14 19-3 8-11 12-23 11l-27-3c16 11 35 15 55 11 19-4 34-18 50-31l21-17c8-7 18-5 22 2 4 6 2 14-5 21l-40 39c-20 19-44 29-74 29-35 0-64-12-86-34l-30-31c-9-9-7-23 4-31 5-4 11-6 16-5z" fill="url(#teal)"/>
+  <!-- Wordmark -->
+  <text x="350" y="235" font-family="Inter, Avenir, Montserrat, Arial, sans-serif" font-size="104" font-weight="700" letter-spacing="-3">
+    <tspan fill="#153B68">Cura</tspan><tspan fill="#0CA99F">vault</tspan>
+  </text>
+</svg>

@@ -1,0 +1,16 @@
+{
+  "name": "CuraVault AI — Health Assistant & Family Vault",
+  "short_name": "CuraVault AI",
+  "description": "Privacy-first AI Medical Report & Prescription Decoder with Family Health Vault.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#0D9488",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2966/2966327.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

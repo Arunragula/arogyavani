@@ -1,0 +1,30 @@
+# 1. Virtual Environment
+venv/
+.venv/
+env/
+
+# 2. Secret API Keys & Config
+.env
+.env.*
+
+# 3. Python Cache (including inside app/ and alembic/)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# 4. Local SQLite Database Files (Never push local DB data to Git!)
+*.db
+*.sqlite
+*.sqlite3
+health_vault.db
+
+# 5. Generated Voice Audio Files (Temporary MP3 cache)
+generated_audio/
+*.mp3
+
+# 6. OS / Editor Files
+.DS_Store
+.vscode/
+.idea/
+vault_uploads/

@@ -1,0 +1,132 @@
+<!-- frontend/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>CuraVault AI — Understand Your Health Without Losing Your Privacy</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="icon" href="/assets/images/logo.svg" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+  <!-- TOP HEADER -->
+  <header class="top-header">
+    <div class="container header-inner">
+      <a href="/" class="brand-link">
+        <img src="/assets/images/logo.svg" alt="CuraVault Logo" class="brand-logo" />
+        <span>CuraVault<span class="brand-accent">AI</span></span>
+      </a>
+
+      <nav class="desktop-nav">
+        <a href="/" class="active">Home</a>
+        <a href="/about">About & Privacy</a>
+        <a href="/contact">Contact</a>
+      </nav>
+
+      <div style="display:flex; align-items:center; gap:10px;">
+        <a href="/login" class="btn btn-outline desktop-only">Sign In</a>
+        <button onclick="startGuestSession()" class="btn btn-primary">
+          <i data-lucide="sparkles" style="width:16px;height:16px;"></i> Try Free as Guest
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- HERO SECTION -->
+  <main class="container" style="padding-top:32px;">
+    <section class="grid-2" style="align-items:center; gap:32px; padding: 16px 0 40px;">
+      <div class="space-y">
+        <span class="badge badge-teal">
+          <i data-lucide="shield-check" style="width:14px;height:14px;"></i>
+          Personal Identity Protected Before AI Analysis
+        </span>
+        <h1 style="font-size: clamp(1.85rem, 4vw, 3rem); font-weight:800; line-height:1.15; letter-spacing:-0.02em;">
+          Don't Read Medical Reports or Take Prescriptions <span class="brand-accent">Blindly.</span>
+        </h1>
+        <p style="color:var(--text-muted); font-size:1rem; line-height:1.65;">
+          90% of people don't know what their blood test numbers or prescribed tablets actually mean. 
+          <strong>CuraVault AI</strong> automatically strips out your personal name and phone number, compares your values against a healthy human, and speaks to your family in your native language.
+        </p>
+
+        <div style="display:flex; flex-wrap:wrap; gap:12px; padding-top:8px;">
+          <button onclick="startGuestSession()" class="btn btn-primary" style="padding:14px 24px; font-size:0.95rem;">
+            <i data-lucide="zap" style="width:18px;height:18px;"></i> Try Instantly as Guest
+          </button>
+          <a href="/about" class="btn btn-outline" style="padding:14px 22px; font-size:0.95rem;">
+            How Our Privacy Shield Works
+          </a>
+        </div>
+      </div>
+
+      <!-- Interactive Preview Card -->
+      <div class="card space-y">
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border); padding-bottom:12px;">
+          <span class="badge badge-success">🔒 Personal Details Hidden</span>
+          <span style="font-size:0.78rem; font-weight:700; color:var(--text-muted);">Patient Context: 23Y • Male</span>
+        </div>
+
+        <div style="background:var(--danger-soft); border:1px solid #FECDD3; border-radius:16px; padding:16px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="badge badge-danger">Needs Attention</span>
+            <span style="font-size:0.75rem; font-weight:700; color:var(--primary-dark);">🔊 Tap any card to listen</span>
+          </div>
+          <h3 style="font-weight:800; margin-top:8px;">Serum Creatinine</h3>
+          <div class="compare-box" style="background:#fff;">
+            <div class="compare-col">
+              <div class="compare-label">Your Value</div>
+              <div class="compare-val-alert">0.3 mg/dL</div>
+            </div>
+            <div class="compare-col">
+              <div class="compare-label">Healthy Human Range</div>
+              <div class="compare-val-healthy">0.7 – 1.3 mg/dL</div>
+            </div>
+          </div>
+          <p style="font-size:0.8rem; color:#475569;">Lower than typical for an adult male; often linked to low muscle mass or diet.</p>
+        </div>
+
+        <div style="background:var(--primary-soft); border:1px solid var(--primary-light); border-radius:16px; padding:14px; font-size:0.82rem;">
+          <strong style="color:var(--primary-dark);">💊 Prescription Decoder:</strong>
+          <p style="color:#334155; margin-top:4px;"><strong>Augmentin 625 (1-0-1 PC)</strong> → Active Salt: <em>Amoxicillin + Clavulanic Acid</em>. Take Morning & Night after meals.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 PILLARS -->
+    <section style="padding: 24px 0 40px;">
+      <div class="grid-3">
+        <div class="card space-y">
+          <div class="badge badge-teal">1. Lab Report Simplifier</div>
+          <h3 style="font-size:1.1rem; font-weight:800;">Side-by-Side Healthy Ranges</h3>
+          <p style="font-size:0.85rem; color:var(--text-muted);">Upload up to 10 pages. See every result next to what a healthy human should have, plus smart questions to ask your doctor.</p>
+        </div>
+        <div class="card space-y">
+          <div class="badge badge-teal">2. Prescription Decoder</div>
+          <h3 style="font-size:1.1rem; font-weight:800;">Know Every Tablet You Take</h3>
+          <p style="font-size:0.85rem; color:var(--text-muted);">Reveals the active generic salt, purpose, common side effects, and translates doctor shorthand like 1-0-1, BD, and PC.</p>
+        </div>
+        <div class="card space-y">
+          <div class="badge badge-teal">3. Family Health Vault</div>
+          <h3 style="font-size:1.1rem; font-weight:800;">One Place for Parents & Kids</h3>
+          <p style="font-size:0.85rem; color:var(--text-muted);">Keep Mom, Dad, and your own medical history organized. Switch between 10+ regional languages with natural voice audio.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- MOBILE APP BOTTOM BAR -->
+  <nav class="mobile-bottom-nav">
+    <div class="mobile-nav-grid">
+      <a href="/" class="mobile-nav-item active"><i data-lucide="home" style="width:20px;height:20px;"></i><span>Home</span></a>
+      <button onclick="startGuestSession()" class="mobile-nav-item"><i data-lucide="scan-line" style="width:20px;height:20px;"></i><span>Open App</span></button>
+      <a href="/about" class="mobile-nav-item"><i data-lucide="shield" style="width:20px;height:20px;"></i><span>Privacy</span></a>
+      <a href="/contact" class="mobile-nav-item"><i data-lucide="mail" style="width:20px;height:20px;"></i><span>Contact</span></a>
+    </div>
+  </nav>
+
+  <script src="/assets/js/auth.js"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>

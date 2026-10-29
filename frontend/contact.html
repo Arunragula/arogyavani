@@ -1,0 +1,56 @@
+<!-- frontend/contact.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Contact Us — CuraVault AI</title>
+  <link rel="icon" href="/assets/images/logo.svg" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <header class="top-header">
+    <div class="container header-inner">
+      <a href="/" class="brand-link">
+        <img src="/assets/images/logo.svg" alt="Logo" class="brand-logo" />
+        <span>CuraVault<span class="brand-accent">AI</span></span>
+      </a>
+      <nav class="desktop-nav">
+        <a href="/">Home</a>
+        <a href="/about">About & Privacy</a>
+        <a href="/contact" class="active">Contact</a>
+      </nav>
+      <button onclick="startGuestSession()" class="btn btn-primary">Open App</button>
+    </div>
+  </header>
+
+  <main class="container" style="max-width:520px; padding-top:36px;">
+    <div class="card space-y">
+      <div>
+        <span class="badge badge-teal">Support & Partnerships</span>
+        <h1 style="font-size:1.5rem; font-weight:800; margin-top:6px;">Get in Touch</h1>
+        <p style="font-size:0.82rem; color:var(--text-muted);">Have feedback, clinic inquiries, or regional language requests?</p>
+      </div>
+      <form onsubmit="event.preventDefault(); alert('Thank you! We have received your message.'); this.reset();" class="space-y">
+        <input type="text" required placeholder="Your Name" class="input-field" />
+        <input type="email" required placeholder="Your Email" class="input-field" />
+        <textarea rows="4" required placeholder="How can we help you?" class="input-field"></textarea>
+        <button type="submit" class="btn btn-primary" style="width:100%; padding:13px;">Send Message</button>
+      </form>
+    </div>
+  </main>
+
+  <nav class="mobile-bottom-nav">
+    <div class="mobile-nav-grid">
+      <a href="/" class="mobile-nav-item"><i data-lucide="home" style="width:20px;height:20px;"></i><span>Home</span></a>
+      <button onclick="startGuestSession()" class="mobile-nav-item"><i data-lucide="scan-line" style="width:20px;height:20px;"></i><span>Open App</span></button>
+      <a href="/about" class="mobile-nav-item"><i data-lucide="shield" style="width:20px;height:20px;"></i><span>Privacy</span></a>
+      <a href="/contact" class="mobile-nav-item active"><i data-lucide="mail" style="width:20px;height:20px;"></i><span>Contact</span></a>
+    </div>
+  </nav>
+
+  <script src="/assets/js/auth.js"></script>
+  <script>lucide.createIcons();</script>
+</body>
+</html>
