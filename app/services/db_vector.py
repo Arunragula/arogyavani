@@ -3,12 +3,20 @@ import os
 import uuid
 import hashlib
 import numpy as np
-from sqlalchemy import func, text
-from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import func
 from app.db.database import engine, SessionLocal, Base, IS_POSTGRES, init_pgvector_extension
-from app.db.models import FamilyMember, MedicalReport, QATrainingLog
+from app.db.models import VaultAccessRole, FamilyMember, MedicalReport
 from app.services.embeddings import generate_local_embedding
 from app.services.analyzer import translate_locked_report
+from app.services.crypto_vault import (
+    hash_invite_code,
+    wrap_vault_key_for_role_code,
+    encrypt_json_with_key,
+    decrypt_json_with_key,
+    encrypt_bytes_with_key,
+    decrypt_bytes_with_key,
+    compress_image_for_free_storage,
+)
 
 VAULT_FILES_DIR = "vault_uploads"
 os.makedirs(VAULT_FILES_DIR, exist_ok=True)
@@ -17,89 +25,121 @@ init_pgvector_extension()
 Base.metadata.create_all(bind=engine)
 
 
-def auto_upgrade_sqlite_schema():
-    """Ensures existing health_vault.db automatically gets new columns without errors."""
-    if not IS_POSTGRES:
-        with engine.connect() as conn:
-            for col_name, col_type in [
-                ("document_hash", "VARCHAR(64)"),
-                ("translations_json", "JSON"),
-            ]:
-                try:
-                    conn.execute(text(f"ALTER TABLE medical_reports ADD COLUMN {col_name} {col_type}"))
-                    conn.commit()
-                except Exception:
-                    pass
+# =========================================================
+# 1. COMPRESSED & ENCRYPTED FILE STORAGE
+# =========================================================
 
-
-auto_upgrade_sqlite_schema()
-
-
-def save_physical_files_to_vault(report_id: str, files_data: list) -> list[dict]:
+def save_encrypted_files_to_vault(
+    report_id: str, files_data: list, vault_key: bytes, prefix: str = "doc"
+) -> list[dict]:
     """
-    Saves the actual uploaded images/PDFs to disk (`vault_uploads/`) so the patient
-    can view or show the original report to their doctor months later.
+    1. Compresses 6 MB images down to ~120 KB WebP.
+    2. Encrypts the bytes with the user's secret AES-256 vault_key so nobody else can view them.
     """
     stored_files = []
-    for idx, (orig_name, file_bytes) in enumerate(files_data, start=1):
-        ext = orig_name.split(".")[-1].lower() if "." in orig_name else "jpg"
-        safe_name = f"{report_id}_page{idx}.{ext}"
-        filepath = os.path.join(VAULT_FILES_DIR, safe_name)
+    for idx, (orig_name, raw_bytes) in enumerate(files_data, start=1):
+        compressed_bytes, mime_type = compress_image_for_free_storage(raw_bytes, orig_name)
+        encrypted_bytes = encrypt_bytes_with_key(compressed_bytes, vault_key)
 
+        file_id = f"{report_id}_{prefix}_{idx}.enc"
+        filepath = os.path.join(VAULT_FILES_DIR, file_id)
         with open(filepath, "wb") as f:
-            f.write(file_bytes)
+            f.write(encrypted_bytes)
 
         stored_files.append({
-            "page": idx,
+            "file_id": file_id,
             "filename": orig_name,
-            "url": f"/vault-files/{safe_name}",
-            "is_pdf": ext == "pdf",
+            "mime_type": mime_type,
+            "is_pdf": mime_type == "application/pdf",
+            "size_kb": round(len(compressed_bytes) / 1024, 1),
         })
     return stored_files
 
 
-def normalize_stored_files(filenames_col) -> list[dict]:
-    """Handles both new dict file objects and older string filenames gracefully."""
-    if not filenames_col:
-        return []
-    normalized = []
-    for item in filenames_col:
-        if isinstance(item, dict):
-            normalized.append(item)
-        elif isinstance(item, str):
-            normalized.append({"page": 1, "filename": item, "url": None, "is_pdf": item.lower().endswith(".pdf")})
-    return normalized
+def read_decrypted_vault_file(household_id: str, report_id: str, file_id: str, vault_key: bytes) -> tuple[bytes, str]:
+    """Verifies household ownership and decrypts the requested image/PDF in memory."""
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(MedicalReport)
+            .filter(
+                MedicalReport.report_id == report_id,
+                MedicalReport.household_id == household_id,
+            )
+            .first()
+        )
+        if not record:
+            raise FileNotFoundError("Record not found or access denied.")
+
+        # Prevent path traversal
+        safe_file_id = os.path.basename(file_id)
+        if not safe_file_id.startswith(report_id):
+            raise FileNotFoundError("Invalid file reference.")
+
+        filepath = os.path.join(VAULT_FILES_DIR, safe_file_id)
+        if not os.path.exists(filepath):
+            raise FileNotFoundError("Encrypted file not found on storage.")
+
+        with open(filepath, "rb") as f:
+            encrypted_bytes = f.read()
+
+        decrypted_bytes = decrypt_bytes_with_key(encrypted_bytes, vault_key)
+
+        # Look up mime_type
+        mime_type = "image/webp"
+        for item in (record.filenames or []):
+            if isinstance(item, dict) and item.get("file_id") == safe_file_id:
+                mime_type = item.get("mime_type", "image/webp")
+        return decrypted_bytes, mime_type
+    finally:
+        db.close()
 
 
-def compute_document_hash(member_id: str, doc_category: str, files_data: list) -> str:
+# =========================================================
+# 2. DETERMINISTIC HASH & ENCRYPTED REPORT STORAGE
+# =========================================================
+
+def compute_document_hash(household_id: str, member_id: str, doc_category: str, files_data: list) -> str:
     hasher = hashlib.sha256()
-    hasher.update(f"{member_id.lower().strip()}:{doc_category}:".encode("utf-8"))
+    hasher.update(f"{household_id}:{member_id.lower().strip()}:{doc_category}:".encode("utf-8"))
     for _, file_bytes in files_data:
         hasher.update(file_bytes)
     return hasher.hexdigest()
 
 
-def get_cached_report_by_hash(doc_hash: str, requested_language: str) -> dict | None:
+def get_cached_report_by_hash(
+    household_id: str, doc_hash: str, requested_language: str, vault_key: bytes
+) -> dict | None:
     lang_key = requested_language.strip().capitalize()
     db = SessionLocal()
     try:
-        record = db.query(MedicalReport).filter(MedicalReport.document_hash == doc_hash).first()
+        record = (
+            db.query(MedicalReport)
+            .filter(
+                MedicalReport.household_id == household_id,
+                MedicalReport.document_hash == doc_hash,
+            )
+            .first()
+        )
         if not record:
             return None
 
-        translations = dict(record.translations_json or {})
-        if not translations and record.ai_analysis_json:
-            translations[record.language] = record.ai_analysis_json
+        canonical_json = decrypt_json_with_key(record.ai_analysis_enc, vault_key)
+        translations = decrypt_json_with_key(record.translations_enc, vault_key) or {}
+        if not translations and canonical_json:
+            translations[record.language] = canonical_json
 
         if lang_key in translations:
             ai_output = translations[lang_key]
         else:
-            ai_output = translate_locked_report(record.ai_analysis_json, lang_key)
+            ai_output = translate_locked_report(canonical_json, lang_key)
             translations[lang_key] = ai_output
-            record.translations_json = translations
+            record.translations_enc = encrypt_json_with_key(translations, vault_key)
             record.language = lang_key
-            flag_modified(record, "translations_json")
             db.commit()
+
+        attached_rx = decrypt_json_with_key(record.attached_prescriptions_enc, vault_key) or []
+        demographics = decrypt_json_with_key(record.demographics_enc, vault_key) or {}
 
         return {
             "report_id": record.report_id,
@@ -107,51 +147,23 @@ def get_cached_report_by_hash(doc_hash: str, requested_language: str) -> dict | 
             "date_uploaded": record.created_at.strftime("%d %b %Y, %I:%M %p") if record.created_at else "",
             "selected_language": lang_key,
             "loaded_from_vault_cache": True,
-            "stored_files": normalize_stored_files(record.filenames),
-            "demographics": record.demographics_json,
+            "stored_files": record.filenames or [],
+            "demographics": demographics,
             "ai_explanation": ai_output,
+            "attached_prescriptions": attached_rx,
         }
     finally:
         db.close()
 
 
-def translate_existing_vault_record(report_id: str, target_language: str) -> dict | None:
-    lang_key = target_language.strip().capitalize()
-    db = SessionLocal()
-    try:
-        record = db.query(MedicalReport).filter(MedicalReport.report_id == report_id).first()
-        if not record:
-            return None
-
-        translations = dict(record.translations_json or {})
-        if not translations and record.ai_analysis_json:
-            translations[record.language or "English"] = record.ai_analysis_json
-
-        if lang_key not in translations:
-            translations[lang_key] = translate_locked_report(record.ai_analysis_json, lang_key)
-            record.translations_json = translations
-            flag_modified(record, "translations_json")
-            db.commit()
-
-        return {
-            "report_id": record.report_id,
-            "member_id": record.member_id,
-            "date_uploaded": record.created_at.strftime("%d %b %Y, %I:%M %p") if record.created_at else "",
-            "selected_language": lang_key,
-            "loaded_from_vault_cache": True,
-            "stored_files": normalize_stored_files(record.filenames),
-            "demographics": record.demographics_json,
-            "ai_explanation": translations[lang_key],
-        }
-    finally:
-        db.close()
-
-
-def ensure_member_exists(db, member_id: str, demographics: dict = None):
+def ensure_member_exists(db, household_id: str, member_id: str, demographics: dict = None):
     clean_id = member_id.lower().strip()
-    existing = db.query(FamilyMember).filter(FamilyMember.member_id == clean_id).first()
+    pk = f"{household_id}:{clean_id}"
+    existing = db.query(FamilyMember).filter(FamilyMember.id == pk).first()
     if not existing:
         existing = FamilyMember(
+            id=pk,
+            household_id=household_id,
             member_id=clean_id,
             display_name=clean_id.capitalize(),
             relationship="Self" if clean_id == "self" else "Family Member",
@@ -163,6 +175,8 @@ def ensure_member_exists(db, member_id: str, demographics: dict = None):
 
 
 def save_report_to_db(
+    household_id: str,
+    vault_key: bytes,
     member_id: str,
     document_hash: str,
     files_data: list,
@@ -171,12 +185,11 @@ def save_report_to_db(
     clean_text: str,
     ai_analysis: dict,
 ) -> dict:
-    report_id = f"rep_{uuid.uuid4().hex[:10]}"
+    report_id = f"rep_{uuid.uuid4().hex}"
     clean_member = member_id.lower().strip()
     lang_key = language.strip().capitalize()
 
-    # Save physical images/PDFs to vault_uploads/ so patient can show doctor later
-    stored_files = save_physical_files_to_vault(report_id, files_data)
+    stored_files = save_encrypted_files_to_vault(report_id, files_data, vault_key, prefix="page")
 
     searchable_summary = (
         f"Report Type: {ai_analysis.get('report_type', '')}\n"
@@ -187,18 +200,20 @@ def save_report_to_db(
 
     db = SessionLocal()
     try:
-        ensure_member_exists(db, clean_member, demographics)
+        ensure_member_exists(db, household_id, clean_member, demographics)
 
         new_report = MedicalReport(
             report_id=report_id,
+            household_id=household_id,
             member_id=clean_member,
             document_hash=document_hash,
             filenames=stored_files,
             language=lang_key,
-            demographics_json=demographics,
-            clean_anonymized_text=clean_text,
-            ai_analysis_json=ai_analysis,
-            translations_json={lang_key: ai_analysis},
+            demographics_enc=encrypt_json_with_key(demographics, vault_key),
+            clean_text_enc=encrypt_json_with_key({"text": clean_text}, vault_key),
+            ai_analysis_enc=encrypt_json_with_key(ai_analysis, vault_key),
+            translations_enc=encrypt_json_with_key({lang_key: ai_analysis}, vault_key),
+            attached_prescriptions_enc=encrypt_json_with_key([], vault_key),
             embedding=embedding_vec,
         )
         db.add(new_report)
@@ -208,17 +223,130 @@ def save_report_to_db(
             "report_id": report_id,
             "date_uploaded": new_report.created_at.strftime("%d %b %Y, %I:%M %p"),
             "stored_files": stored_files,
-            "available_languages": [lang_key],
+            "attached_prescriptions": [],
         }
     finally:
         db.close()
 
 
-def create_or_update_family_member(payload_dict: dict) -> dict:
+# =========================================================
+# 3. ATTACH PRESCRIBED MEDICINES DIRECTLY TO A LAB REPORT!
+# =========================================================
+
+def get_report_context_for_prescription(household_id: str, report_id: str, vault_key: bytes) -> str:
+    """Fetches the Lab Report summary so the attached prescription knows which report it is treating!"""
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(MedicalReport)
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
+            .first()
+        )
+        if not record:
+            return ""
+        ai_data = decrypt_json_with_key(record.ai_analysis_enc, vault_key) or {}
+        att = ai_data.get("attention_needed", [])
+        att_str = ", ".join(f"{x.get('item')}: {x.get('your_value')}" for x in att)
+        return f"Linked Lab Report: {ai_data.get('report_type', '')}. Findings needing attention: {att_str}"
+    finally:
+        db.close()
+
+
+def attach_prescription_to_existing_report(
+    household_id: str,
+    vault_key: bytes,
+    report_id: str,
+    files_data: list,
+    rx_analysis: dict,
+) -> dict | None:
+    """
+    Links decoded prescribed medicines + compressed prescription images directly inside
+    the parent Lab Report so both stay intact in one single Family Vault card!
+    """
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(MedicalReport)
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
+            .first()
+        )
+        if not record:
+            return None
+
+        existing_rx_list = decrypt_json_with_key(record.attached_prescriptions_enc, vault_key)
+        if not isinstance(existing_rx_list, list):
+            existing_rx_list = []
+
+        rx_idx = len(existing_rx_list) + 1
+        rx_files = save_encrypted_files_to_vault(report_id, files_data, vault_key, prefix=f"rx{rx_idx}")
+
+        # Also append rx_files to record.filenames so the file decryptor recognizes them
+        all_files = list(record.filenames or []) + rx_files
+        record.filenames = all_files
+
+        new_rx_entry = {
+            "rx_id": f"rx_{uuid.uuid4().hex[:8]}",
+            "stored_files": rx_files,
+            "prescription_guide": rx_analysis,
+        }
+        existing_rx_list.append(new_rx_entry)
+        record.attached_prescriptions_enc = encrypt_json_with_key(existing_rx_list, vault_key)
+        db.commit()
+
+        return {
+            "report_id": report_id,
+            "attached_prescriptions": existing_rx_list,
+        }
+    finally:
+        db.close()
+
+
+# =========================================================
+# 4. FAMILY VAULT TIMELINE, TRANSLATION & ROLE MANAGEMENT
+# =========================================================
+
+def translate_existing_vault_record(
+    household_id: str, report_id: str, target_language: str, vault_key: bytes
+) -> dict | None:
+    lang_key = target_language.strip().capitalize()
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(MedicalReport)
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
+            .first()
+        )
+        if not record:
+            return None
+
+        canonical_json = decrypt_json_with_key(record.ai_analysis_enc, vault_key)
+        translations = decrypt_json_with_key(record.translations_enc, vault_key) or {}
+        if lang_key not in translations:
+            translations[lang_key] = translate_locked_report(canonical_json, lang_key)
+            record.translations_enc = encrypt_json_with_key(translations, vault_key)
+            db.commit()
+
+        return {
+            "report_id": record.report_id,
+            "member_id": record.member_id,
+            "date_uploaded": record.created_at.strftime("%d %b %Y, %I:%M %p") if record.created_at else "",
+            "selected_language": lang_key,
+            "loaded_from_vault_cache": True,
+            "stored_files": [f for f in (record.filenames or []) if "_page_" in f.get("file_id", "")],
+            "demographics": decrypt_json_with_key(record.demographics_enc, vault_key) or {},
+            "ai_explanation": translations[lang_key],
+            "attached_prescriptions": decrypt_json_with_key(record.attached_prescriptions_enc, vault_key) or [],
+        }
+    finally:
+        db.close()
+
+
+def create_or_update_family_member(household_id: str, payload_dict: dict) -> dict:
     db = SessionLocal()
     try:
         clean_id = payload_dict["member_id"].lower().strip()
-        member = db.query(FamilyMember).filter(FamilyMember.member_id == clean_id).first()
+        pk = f"{household_id}:{clean_id}"
+        member = db.query(FamilyMember).filter(FamilyMember.id == pk).first()
         if member:
             member.display_name = payload_dict["display_name"]
             member.relationship = payload_dict.get("relationship", member.relationship)
@@ -228,6 +356,8 @@ def create_or_update_family_member(payload_dict: dict) -> dict:
             member.known_conditions = payload_dict.get("known_conditions") or member.known_conditions
         else:
             member = FamilyMember(
+                id=pk,
+                household_id=household_id,
                 member_id=clean_id,
                 display_name=payload_dict["display_name"],
                 relationship=payload_dict.get("relationship", "Family"),
@@ -252,20 +382,23 @@ def create_or_update_family_member(payload_dict: dict) -> dict:
         db.close()
 
 
-def list_all_family_members() -> list:
+def list_all_family_members(household_id: str, allowed_member_id: str = "*") -> list:
     db = SessionLocal()
     try:
-        # Also include any member_ids that exist in medical_reports
-        report_member_ids = [r[0] for r in db.query(MedicalReport.member_id).distinct().all() if r[0]]
-        for m_id in report_member_ids:
-            ensure_member_exists(db, m_id)
+        ensure_member_exists(db, household_id, "self")
+        query = db.query(FamilyMember).filter(FamilyMember.household_id == household_id)
+        if allowed_member_id != "*":
+            query = query.filter(FamilyMember.member_id == allowed_member_id)
 
-        members = db.query(FamilyMember).order_by(FamilyMember.created_at.asc()).all()
+        members = query.order_by(FamilyMember.created_at.asc()).all()
         result = []
         for m in members:
             count = (
                 db.query(func.count(MedicalReport.report_id))
-                .filter(MedicalReport.member_id == m.member_id)
+                .filter(
+                    MedicalReport.household_id == household_id,
+                    MedicalReport.member_id == m.member_id,
+                )
                 .scalar()
             )
             result.append({
@@ -283,30 +416,36 @@ def list_all_family_members() -> list:
         db.close()
 
 
-def get_member_timeline(member_id: str) -> dict:
+def get_member_timeline(household_id: str, member_id: str, vault_key: bytes) -> dict:
     clean_id = member_id.lower().strip()
+    pk = f"{household_id}:{clean_id}"
     db = SessionLocal()
     try:
-        member = db.query(FamilyMember).filter(FamilyMember.member_id == clean_id).first()
+        member = db.query(FamilyMember).filter(FamilyMember.id == pk).first()
         reports = (
             db.query(MedicalReport)
-            .filter(MedicalReport.member_id == clean_id)
+            .filter(
+                MedicalReport.household_id == household_id,
+                MedicalReport.member_id == clean_id,
+            )
             .order_by(MedicalReport.created_at.desc())
             .all()
         )
         timeline = []
         for r in reports:
-            ai_data = r.ai_analysis_json or {}
-            category = ai_data.get("document_category", "lab_report")
+            ai_data = decrypt_json_with_key(r.ai_analysis_enc, vault_key) or {}
+            attached_rx = decrypt_json_with_key(r.attached_prescriptions_enc, vault_key) or []
+            page_files = [f for f in (r.filenames or []) if "_rx" not in f.get("file_id", "")]
+
             timeline.append({
                 "report_id": r.report_id,
-                "date_uploaded": r.created_at.strftime("%d %b %Y, %I:%M %p") if r.created_at else "Saved Record",
-                "category": category,
+                "date_uploaded": r.created_at.strftime("%d %b %Y, %I:%M %p") if r.created_at else "",
+                "category": ai_data.get("document_category", "lab_report"),
                 "report_type": ai_data.get("report_type", "Medical Document"),
                 "overall_status": ai_data.get("overall_status", ""),
                 "language": r.language,
-                "stored_files": normalize_stored_files(r.filenames),
-                "ai_explanation": ai_data,
+                "stored_files": page_files,
+                "attached_prescriptions_count": len(attached_rx),
             })
 
         return {
@@ -326,42 +465,61 @@ def get_member_timeline(member_id: str) -> dict:
         db.close()
 
 
-def get_single_vault_record(report_id: str, language: str = None) -> dict:
+def get_single_vault_record(
+    household_id: str, report_id: str, vault_key: bytes, language: str = None
+) -> dict | None:
+    if language:
+        return translate_existing_vault_record(household_id, report_id, language, vault_key)
+
     db = SessionLocal()
     try:
-        r = db.query(MedicalReport).filter(MedicalReport.report_id == report_id).first()
+        r = (
+            db.query(MedicalReport)
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
+            .first()
+        )
         if not r:
             return None
 
-        translations = dict(r.translations_json or {})
-        if not translations and r.ai_analysis_json:
-            translations[r.language or "English"] = r.ai_analysis_json
-
-        target_lang = (language or r.language or "English").strip().capitalize()
-        if target_lang in translations:
-            ai_data = translations[target_lang]
-        else:
-            ai_data = r.ai_analysis_json
+        ai_data = decrypt_json_with_key(r.ai_analysis_enc, vault_key) or {}
+        attached_rx = decrypt_json_with_key(r.attached_prescriptions_enc, vault_key) or []
+        page_files = [f for f in (r.filenames or []) if "_rx" not in f.get("file_id", "")]
 
         return {
             "report_id": r.report_id,
             "member_id": r.member_id,
             "date_uploaded": r.created_at.strftime("%d %b %Y, %I:%M %p") if r.created_at else "",
-            "selected_language": target_lang,
-            "stored_files": normalize_stored_files(r.filenames),
-            "demographics": r.demographics_json,
+            "selected_language": r.language,
+            "stored_files": page_files,
+            "demographics": decrypt_json_with_key(r.demographics_enc, vault_key) or {},
             "ai_explanation": ai_data,
+            "attached_prescriptions": attached_rx,
         }
     finally:
         db.close()
 
 
-def delete_vault_record(report_id: str) -> bool:
+def delete_vault_record(household_id: str, report_id: str) -> bool:
+    """Deletes the DB row AND deletes all encrypted image/PDF files from storage!"""
     db = SessionLocal()
     try:
-        r = db.query(MedicalReport).filter(MedicalReport.report_id == report_id).first()
+        r = (
+            db.query(MedicalReport)
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
+            .first()
+        )
         if not r:
             return False
+
+        for f_info in (r.filenames or []):
+            if isinstance(f_info, dict) and f_info.get("file_id"):
+                fpath = os.path.join(VAULT_FILES_DIR, os.path.basename(f_info["file_id"]))
+                if os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                    except OSError:
+                        pass
+
         db.delete(r)
         db.commit()
         return True
@@ -369,19 +527,25 @@ def delete_vault_record(report_id: str) -> bool:
         db.close()
 
 
-def search_member_history_vectors(member_id: str, query: str, top_k: int = 3) -> list:
+def search_member_history_vectors(
+    household_id: str, member_id: str, query: str, vault_key: bytes, top_k: int = 3
+) -> list:
     query_vec = generate_local_embedding(query)
     clean_member = member_id.lower().strip()
     db = SessionLocal()
     try:
         rows = (
             db.query(MedicalReport)
-            .filter(MedicalReport.member_id == clean_member)
+            .filter(
+                MedicalReport.household_id == household_id,
+                MedicalReport.member_id == clean_member,
+            )
             .order_by(MedicalReport.created_at.desc())
             .all()
         )
         if not rows:
             return []
+
         q_arr = np.array(query_vec, dtype=float)
         scored = []
         for r in rows:
@@ -390,12 +554,14 @@ def search_member_history_vectors(member_id: str, query: str, top_k: int = 3) ->
                 if r.embedding and len(r.embedding) == len(q_arr)
                 else 0.0
             )
+            clean_obj = decrypt_json_with_key(r.clean_text_enc, vault_key) or {}
+            ai_obj = decrypt_json_with_key(r.ai_analysis_enc, vault_key) or {}
             scored.append({
                 "report_id": r.report_id,
                 "date": r.created_at.strftime("%Y-%m-%d") if r.created_at else "",
                 "sim": sim,
-                "clean_text": r.clean_anonymized_text,
-                "ai_summary": (r.ai_analysis_json or {}).get("overall_status", ""),
+                "clean_text": clean_obj.get("text", ""),
+                "ai_summary": ai_obj.get("overall_status", ""),
             })
         scored.sort(key=lambda x: x["sim"], reverse=True)
         return scored[:top_k]
@@ -403,34 +569,73 @@ def search_member_history_vectors(member_id: str, query: str, top_k: int = 3) ->
         db.close()
 
 
-def save_qa_log(member_id: str, language: str, question: str, ai_response: dict):
+# =========================================================
+# 5. FAMILY VAULT ROLE MANAGEMENT (OWNER ASSIGNS ROLES)
+# =========================================================
+
+def create_family_role_code(household_id: str, vault_key: bytes, payload: dict) -> dict:
+    """Allows the Vault Owner to create an 'editor' or 'viewer' share code for family members."""
+    share_code = payload["share_code"].strip()
+    code_hash = hash_invite_code(share_code)
+    wrapped_key = wrap_vault_key_for_role_code(vault_key, share_code)
+
     db = SessionLocal()
     try:
-        db.add(
-            QATrainingLog(
-                id=f"qa_{uuid.uuid4().hex[:10]}",
-                member_id=member_id.lower().strip(),
-                language=language,
-                user_question=question,
-                ai_response_json=ai_response,
-            )
+        existing = db.query(VaultAccessRole).filter(VaultAccessRole.code_hash == code_hash).first()
+        if existing:
+            raise ValueError("This share code is already in use. Please pick a unique code.")
+
+        role_entry = VaultAccessRole(
+            code_hash=code_hash,
+            household_id=household_id,
+            label=payload["label"].strip(),
+            role=payload["role"],
+            allowed_member_id=payload.get("allowed_member_id", "*").lower().strip(),
+            wrapped_vault_key=wrapped_key,
         )
+        db.add(role_entry)
         db.commit()
+        return {
+            "label": role_entry.label,
+            "role": role_entry.role,
+            "allowed_member_id": role_entry.allowed_member_id,
+        }
     finally:
         db.close()
 
 
-def export_training_dataset() -> list:
+def list_household_roles(household_id: str) -> list:
     db = SessionLocal()
     try:
-        rows = db.query(MedicalReport).all()
+        rows = (
+            db.query(VaultAccessRole)
+            .filter(VaultAccessRole.household_id == household_id)
+            .order_by(VaultAccessRole.created_at.asc())
+            .all()
+        )
         return [
             {
-                "instruction": f"Analyze this anonymized medical document in {r.language}.",
-                "input": r.clean_anonymized_text,
-                "output": r.ai_analysis_json,
+                "role_id": r.code_hash[:12],
+                "label": r.label,
+                "role": r.role,
+                "allowed_member_id": r.allowed_member_id,
+                "created_at": r.created_at.strftime("%d %b %Y") if r.created_at else "",
             }
             for r in rows
         ]
+    finally:
+        db.close()
+
+
+def revoke_household_role(household_id: str, role_id_prefix: str) -> bool:
+    db = SessionLocal()
+    try:
+        rows = db.query(VaultAccessRole).filter(VaultAccessRole.household_id == household_id).all()
+        for r in rows:
+            if r.code_hash.startswith(role_id_prefix) and r.role != "owner":
+                db.delete(r)
+                db.commit()
+                return True
+        return False
     finally:
         db.close()

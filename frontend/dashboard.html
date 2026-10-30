@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Health Workspace — CuraVault AI</title>
   <link rel="manifest" href="/static/manifest.json" />
   <link rel="icon" href="/assets/images/logo.svg" />
@@ -20,22 +20,14 @@
         <span>CuraVault<span class="brand-accent">AI</span></span>
       </a>
 
-      <!-- Desktop Tabs (Hidden on Mobile because Mobile uses Native Bottom Bar!) -->
       <div class="segmented-control desktop-only">
-        <button onclick="switchTab('scanner')" id="dt-tab-scanner" class="seg-btn active">
-          <i data-lucide="scan-line" style="width:15px;height:15px;"></i> Scanner
-        </button>
-        <button onclick="switchTab('vault')" id="dt-tab-vault" class="seg-btn">
-          <i data-lucide="folder-heart" style="width:15px;height:15px;"></i> Family Vault
-        </button>
-        <button onclick="switchTab('chat')" id="dt-tab-chat" class="seg-btn">
-          <i data-lucide="message-square-heart" style="width:15px;height:15px;"></i> Ask Health AI
-        </button>
+        <button onclick="switchTab('scanner')" id="dt-tab-scanner" class="seg-btn active">Scanner</button>
+        <button onclick="switchTab('vault')" id="dt-tab-vault" class="seg-btn">Family Vault</button>
+        <button onclick="switchTab('chat')" id="dt-tab-chat" class="seg-btn">Ask Health AI</button>
       </div>
 
-      <!-- Language Selector (Switching this translates open reports live!) -->
       <div style="display:flex; align-items:center; gap:8px;">
-        <select id="languageSelect" onchange="handleLanguageChange()" class="input-field" style="width:auto; padding:7px 10px; font-weight:700; font-size:0.8rem;">
+        <select id="languageSelect" onchange="handleLanguageChange()" aria-label="Select Language" class="input-field" style="width:auto; padding:6px 10px; font-weight:600; font-size:0.78rem;">
           <option value="English">🌐 English</option>
           <option value="Hindi">🇮🇳 हिन्दी (Hindi)</option>
           <option value="Hinglish">🇮🇳 Hinglish</option>
@@ -43,61 +35,83 @@
           <option value="Tamil">🇮🇳 தமிழ் (Tamil)</option>
           <option value="Kannada">🇮🇳 ಕನ್ನಡ (Kannada)</option>
           <option value="Malayalam">🇮🇳 മലയാളം (Malayalam)</option>
+          <option value="Bengali">🇮🇳 বাংলা (Bengali)</option>
+          <option value="Marathi">🇮🇳 मराठी (Marathi)</option>
+          <option value="Gujarati">🇮🇳 ગુજરાતી (Gujarati)</option>
           <option value="Arabic">🇸🇦 العربية (Arabic)</option>
           <option value="Urdu">🇵🇰 اردو (Urdu)</option>
           <option value="Spanish">🇪🇸 Español</option>
         </select>
-        <span id="userSessionBadge" class="badge badge-teal desktop-only">⚡ Guest</span>
-        <button onclick="logoutSession()" class="btn-icon" title="Sign Out">
-          <i data-lucide="log-out" style="width:16px;height:16px;"></i>
+        <span id="userSessionBadge" class="badge badge-teal desktop-only">Vault</span>
+        <button onclick="logoutSession()" class="btn-icon" aria-label="Lock Vault" title="Lock Vault">
+          <i data-lucide="lock" style="width:15px;height:15px;"></i>
         </button>
       </div>
     </div>
 
     <!-- FAMILY PROFILES BAR -->
     <div class="sub-bar">
-      <div class="container sub-bar-inner">
+      <div class="container">
         <div class="pills-scroll" id="familyPillsContainer"></div>
       </div>
     </div>
   </header>
 
   <!-- MAIN WORKSPACE -->
-  <main class="container" style="padding-top:20px;">
+  <main class="container" style="padding-top:18px;">
 
     <!-- VIEW 1: SCANNER -->
     <section id="view-scanner" class="space-y">
-      <div class="card space-y">
-        <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px;">
+      <div id="uploadCardBox" class="card space-y">
+        <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;">
           <div>
-            <h2 style="font-size:1.1rem; font-weight:800;">Decode Medical Document</h2>
-            <p style="font-size:0.78rem; color:var(--text-muted);">Family Profile: <strong id="activeMemberBadge" style="color:var(--primary-dark); text-transform:uppercase;">self</strong></p>
+            <h2 style="font-size:1.05rem; font-weight:700;">Decode Medical Document</h2>
+            <p style="font-size:0.76rem; color:var(--text-muted);">Profile: <strong id="activeMemberBadge" style="color:var(--primary-dark); text-transform:uppercase;">self</strong></p>
           </div>
 
           <div class="segmented-control">
-            <button id="mode-report" onclick="setScanMode('report')" class="seg-btn active">🧪 Lab Report</button>
-            <button id="mode-rx" onclick="setScanMode('prescription')" class="seg-btn">💊 Prescription</button>
+            <button id="mode-report" onclick="setScanMode('report')" class="seg-btn active">Lab Report</button>
+            <button id="mode-rx" onclick="setScanMode('prescription')" class="seg-btn">Prescription</button>
           </div>
         </div>
 
         <label for="fileInput" class="dropzone">
-          <div style="width:48px;height:48px;border-radius:14px;background:var(--primary-light);color:var(--primary-dark);display:flex;align-items:center;justify-content:center;margin-bottom:10px;">
-            <i data-lucide="camera" style="width:24px;height:24px;"></i>
-          </div>
-          <p style="font-weight:800; font-size:0.95rem;">Tap to Snap Photo or Upload PDF (Up to 10 Pages)</p>
-          <p style="font-size:0.76rem; color:var(--text-muted); margin-top:4px;">🔒 Personal names, phone numbers & IDs are stripped locally</p>
+          <i data-lucide="upload-cloud" style="width:26px;height:26px;color:var(--primary);margin-bottom:6px;"></i>
+          <p style="font-weight:600; font-size:0.9rem;">Tap to Snap Photo or Upload PDF (Max 5 files, 10 MB each)</p>
+          <p style="font-size:0.74rem; color:var(--text-muted); margin-top:2px;">Images are automatically compressed by 95% & encrypted with your code</p>
           <input id="fileInput" type="file" multiple accept="image/*,application/pdf" class="hidden" onchange="handleFileSelect(event)" />
         </label>
 
-        <div id="selectedFilesBox" class="hidden" style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; background:#F8FAFC; padding:12px; border-radius:14px; border:1px solid var(--border);">
-          <div id="filePills" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
-          <button id="analyzeBtn" onclick="submitAnalysis()" class="btn btn-primary" style="width:100%;">
-            <i data-lucide="sparkles" style="width:16px;height:16px;"></i> Decode & Save to Vault
-          </button>
+        <!-- PRIVACY & USER CONTROL CHECKBOXES -->
+        <div style="background:#F9FAFB; border:1px solid var(--border); border-radius:10px; padding:12px;" class="space-y">
+          <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.76rem; color:var(--text); cursor:pointer;">
+            <input id="privacyConsentCheck" type="checkbox" checked style="margin-top:3px;" />
+            <span>
+              <strong>Privacy & Educational Consent:</strong> Reduce personal identifiers before AI analysis. I understand this is for educational understanding, not medical diagnosis.
+            </span>
+          </label>
+          <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.76rem; color:var(--text-muted); cursor:pointer;">
+            <input id="saveToVaultCheck" type="checkbox" checked style="margin-top:3px;" />
+            <span>
+              <strong>Zero-Knowledge Vault Storage:</strong> Save an AES-256 encrypted copy to my Family Vault (only accessible with my secret code; uncheck for one-time view only).
+            </span>
+          </label>
         </div>
 
-        <div id="loadingBox" class="hidden" style="text-align:center; padding:24px;">
-          <p style="font-weight:800; color:var(--primary-dark);" id="loadingText">Protecting personal details & decoding medical data...</p>
+        <div id="selectedFilesBox" class="hidden" style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; background:#F9FAFB; padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
+          <div id="filePills" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+          <button id="analyzeBtn" onclick="submitAnalysis()" class="btn btn-primary">Decode Document</button>
+        </div>
+
+        <!-- Step-by-Step Progress Indicator -->
+        <div id="loadingBox" class="hidden" style="text-align:center; padding:18px; background:#F9FAFB; border-radius:10px;">
+          <p style="font-weight:600; font-size:0.85rem; color:var(--primary-dark);" id="loadingText">1/4 Reading document...</p>
+        </div>
+
+        <!-- Inline Error Box with Retry -->
+        <div id="scannerErrorBox" class="hidden" style="background:var(--danger-soft); border:1px solid #FECACA; padding:12px; border-radius:10px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <p id="scannerErrorText" style="font-size:0.82rem; font-weight:600; color:var(--danger);"></p>
+          <button onclick="submitAnalysis()" class="btn btn-outline" style="padding:5px 10px; font-size:0.75rem;">Retry</button>
         </div>
       </div>
 
@@ -107,25 +121,26 @@
 
     <!-- VIEW 2: FAMILY VAULT -->
     <section id="view-vault" class="hidden space-y">
-      <div class="card" style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px;">
-        <div style="display:flex; align-items:center; gap:14px;">
-          <div id="vaultAvatar" style="width:48px;height:48px;border-radius:14px;background:var(--primary-light);color:var(--primary-dark);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.2rem;">S</div>
+      <div class="card" style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div id="vaultAvatar" style="width:42px;height:42px;border-radius:10px;background:var(--primary-soft);color:var(--primary-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1rem;">S</div>
           <div>
             <div style="display:flex; align-items:center; gap:8px;">
-              <h2 id="vaultMemberName" style="font-size:1.15rem; font-weight:800;">Self</h2>
+              <h2 id="vaultMemberName" style="font-size:1.05rem; font-weight:700;">Self</h2>
               <span id="vaultMemberRelation" class="badge badge-teal">Self</span>
             </div>
-            <p id="vaultMemberMeta" style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;"></p>
-            <p id="vaultMemberConditions" style="font-size:0.78rem; color:var(--primary-dark); font-weight:700;"></p>
+            <p id="vaultMemberMeta" style="font-size:0.76rem; color:var(--text-muted); margin-top:2px;"></p>
+            <p id="vaultMemberConditions" style="font-size:0.76rem; color:var(--primary-dark); font-weight:600;"></p>
           </div>
         </div>
-        <button onclick="openMemberModal()" class="btn btn-soft">
-          <i data-lucide="user-plus" style="width:16px;height:16px;"></i> Edit / Add Member
-        </button>
+        <div style="display:flex; flex-wrap:wrap; gap:8px;">
+          <button id="editMemberBtn" onclick="openMemberModal()" class="btn btn-outline">Edit Profile</button>
+          <button id="manageRolesBtn" onclick="openRolesModal()" class="btn btn-soft hidden">🔑 Family Access Roles</button>
+        </div>
       </div>
 
       <div class="card space-y">
-        <h3 style="font-size:0.95rem; font-weight:800;">Saved Health History</h3>
+        <h3 style="font-size:0.9rem; font-weight:700;">Encrypted Health Timeline</h3>
         <div id="vaultTimelineList" class="space-y"></div>
       </div>
     </section>
@@ -135,17 +150,17 @@
       <div class="card space-y">
         <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;">
           <div>
-            <h2 style="font-size:1.1rem; font-weight:800;">Ask Health & History Assistant</h2>
-            <p style="font-size:0.78rem; color:var(--text-muted);">Asking for: <strong id="chatMemberBadge" style="color:var(--primary-dark);">self</strong></p>
+            <h2 style="font-size:1.05rem; font-weight:700;">Ask Health & History AI</h2>
+            <p style="font-size:0.76rem; color:var(--text-muted);">Profile: <strong id="chatMemberBadge" style="color:var(--primary-dark);">self</strong></p>
           </div>
           <label class="badge badge-teal" style="cursor:pointer;">
             <input type="checkbox" id="useHistoryToggle" checked />
-            Personalize with Past Health Records
+            Personalize with Past Vault Records
           </label>
         </div>
 
         <div style="display:flex; gap:8px;">
-          <input id="chatInput" type="text" placeholder="Describe symptoms or ask about past reports..." class="input-field" onkeydown="if(event.key==='Enter') submitQuestion()" />
+          <input id="chatInput" type="text" maxlength="1000" placeholder="Ask about symptoms, medicines, or past reports..." class="input-field" onkeydown="if(event.key==='Enter') submitQuestion()" />
           <button onclick="submitQuestion()" class="btn btn-primary" style="white-space:nowrap;">Ask AI</button>
         </div>
 
@@ -155,20 +170,20 @@
 
   </main>
 
-  <!-- NATIVE MOBILE APP BOTTOM NAVIGATION BAR -->
+  <!-- MOBILE APP BOTTOM BAR -->
   <nav class="mobile-bottom-nav">
     <div class="mobile-nav-grid">
       <button onclick="switchTab('scanner')" id="mb-tab-scanner" class="mobile-nav-item active">
-        <i data-lucide="scan-line" style="width:20px;height:20px;"></i><span>Scanner</span>
+        <i data-lucide="scan-line" style="width:19px;height:19px;"></i><span>Scanner</span>
       </button>
       <button onclick="switchTab('vault')" id="mb-tab-vault" class="mobile-nav-item">
-        <i data-lucide="folder-heart" style="width:20px;height:20px;"></i><span>Vault</span>
+        <i data-lucide="folder-heart" style="width:19px;height:19px;"></i><span>Vault</span>
       </button>
       <button onclick="switchTab('chat')" id="mb-tab-chat" class="mobile-nav-item">
-        <i data-lucide="message-square-heart" style="width:20px;height:20px;"></i><span>Ask AI</span>
+        <i data-lucide="message-square-heart" style="width:19px;height:19px;"></i><span>Ask AI</span>
       </button>
       <a href="/about" class="mobile-nav-item">
-        <i data-lucide="shield" style="width:20px;height:20px;"></i><span>Privacy</span>
+        <i data-lucide="shield" style="width:19px;height:19px;"></i><span>Privacy</span>
       </a>
     </div>
   </nav>
@@ -176,33 +191,70 @@
   <!-- FLOATING AUDIO BAR -->
   <div id="audioPlayerBar" class="audio-bar hidden">
     <div style="flex:1; min-width:0;">
-      <p id="audioBarTitle" style="font-size:0.75rem; font-weight:700; color:#5EEAD4; margin-bottom:4px;">Speaking...</p>
-      <audio id="globalAudio" controls style="width:100%; height:32px;"></audio>
+      <p id="audioBarTitle" style="font-size:0.74rem; font-weight:600; color:#5EEAD4; margin-bottom:4px;">Speaking...</p>
+      <audio id="globalAudio" controls style="width:100%; height:30px;"></audio>
     </div>
-    <button onclick="closeAudioBar()" class="btn-icon" style="background:transparent; color:#fff; border:none;">✕</button>
+    <button onclick="closeAudioBar()" class="btn-icon" aria-label="Close Audio Player" style="background:transparent; color:#fff; border:none;">✕</button>
   </div>
 
-  <!-- FAMILY PROFILE BOTTOM SHEET / MODAL -->
+  <!-- MODAL 1: FAMILY MEMBER PROFILE -->
   <div id="memberModal" class="modal-backdrop hidden">
     <div class="modal-sheet space-y">
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h3 style="font-size:1.05rem; font-weight:800;">Family Member Profile</h3>
-        <button onclick="closeMemberModal()" class="btn-icon">✕</button>
+        <h3 style="font-size:1rem; font-weight:700;">Family Member Profile</h3>
+        <button onclick="closeMemberModal()" class="btn-icon" aria-label="Close Modal">✕</button>
       </div>
       <div class="space-y">
-        <input id="m_id" type="text" placeholder="Profile ID (e.g., self, mom, dad)" class="input-field" />
-        <input id="m_name" type="text" placeholder="Name (e.g., Amma / Mom)" class="input-field" />
+        <input id="m_id" type="text" maxlength="40" placeholder="Profile ID (e.g., self, mom, dad)" class="input-field" />
+        <input id="m_name" type="text" maxlength="80" placeholder="Name (e.g., Amma / Mom)" class="input-field" />
         <div class="grid-2">
-          <input id="m_rel" type="text" placeholder="Relationship (Mother)" class="input-field" />
-          <input id="m_age" type="text" placeholder="Age (54 Years)" class="input-field" />
+          <input id="m_rel" type="text" maxlength="40" placeholder="Relationship (Mother)" class="input-field" />
+          <input id="m_age" type="text" maxlength="30" placeholder="Age (54 Years)" class="input-field" />
         </div>
         <div class="grid-2">
-          <input id="m_gender" type="text" placeholder="Gender" class="input-field" />
-          <input id="m_bg" type="text" placeholder="Blood Group (O+)" class="input-field" />
+          <input id="m_gender" type="text" maxlength="20" placeholder="Gender" class="input-field" />
+          <input id="m_bg" type="text" maxlength="15" placeholder="Blood Group (O+)" class="input-field" />
         </div>
-        <input id="m_cond" type="text" placeholder="Known Conditions (Diabetes, BP)" class="input-field" />
+        <input id="m_cond" type="text" maxlength="500" placeholder="Known Conditions (Diabetes, BP)" class="input-field" />
       </div>
-      <button onclick="saveFamilyMember()" class="btn btn-primary" style="width:100%; padding:13px;">Save Profile</button>
+      <button onclick="saveFamilyMember()" class="btn btn-primary" style="width:100%; padding:11px;">Save Profile</button>
+    </div>
+  </div>
+
+  <!-- MODAL 2: FAMILY VAULT ROLE ASSIGNMENT (OWNER ONLY) -->
+  <div id="rolesModal" class="modal-backdrop hidden">
+    <div class="modal-sheet space-y" style="max-width:480px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="font-size:1rem; font-weight:700;">🔑 Assign Family Vault Roles</h3>
+        <button onclick="closeRolesModal()" class="btn-icon" aria-label="Close Roles Modal">✕</button>
+      </div>
+      <p style="font-size:0.76rem; color:var(--text-muted);">
+        Create a separate code for family members or doctors. They can unlock only what you allow, while your vault remains Zero-Knowledge encrypted.
+      </p>
+      <div class="space-y" style="background:#F9FAFB; padding:12px; border-radius:10px; border:1px solid var(--border);">
+        <input id="r_code" type="text" maxlength="64" placeholder="New Share Code (e.g., MOM-VIEW-2026)" class="input-field" />
+        <input id="r_label" type="text" maxlength="80" placeholder="Label (e.g., Mom's Phone or Dr. Visit)" class="input-field" />
+        <div class="grid-2">
+          <select id="r_role" class="input-field">
+            <option value="viewer">👁️ Viewer (Read & Listen Only)</option>
+            <option value="editor">✍️ Editor (Can Upload & View)</option>
+          </select>
+          <input id="r_member" type="text" maxlength="40" value="*" placeholder="'*' for all, or 'mom'" class="input-field" />
+        </div>
+        <button onclick="createFamilyRole()" class="btn btn-primary" style="width:100%;">Create Role Code</button>
+      </div>
+      <div id="rolesListBox" class="space-y" style="max-height:180px; overflow-y:auto;"></div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: DECRYPTED ORIGINAL DOCUMENT VIEWER (FOR DOCTOR) -->
+  <div id="docPreviewModal" class="modal-backdrop hidden">
+    <div class="modal-sheet space-y" style="max-width:720px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 id="docPreviewTitle" style="font-size:0.95rem; font-weight:700;">Original Document</h3>
+        <button onclick="closeDocPreviewModal()" class="btn-icon" aria-label="Close Preview">✕</button>
+      </div>
+      <div id="docPreviewBody" style="text-align:center; max-height:75vh; overflow:auto;"></div>
     </div>
   </div>
 

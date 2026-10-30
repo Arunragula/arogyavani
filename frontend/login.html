@@ -3,8 +3,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Sign In or Try as Guest — CuraVault AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unlock Family Vault — CuraVault AI</title>
   <link rel="icon" href="/assets/images/logo.svg" />
   <link rel="stylesheet" href="/assets/css/styles.css" />
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -20,32 +20,33 @@
     </div>
   </header>
 
-  <main class="container" style="max-width:440px; padding-top:40px;">
+  <main class="container" style="max-width:440px; padding-top:36px;">
     <div class="card space-y">
-      <div style="text-align:center;">
-        <h1 style="font-size:1.5rem; font-weight:800;">Welcome to CuraVault AI</h1>
-        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:4px;">Try instantly as a Guest or sign in to your Family Vault</p>
+      <div>
+        <span class="badge badge-teal">Friends & Family Beta</span>
+        <h1 style="font-size:1.4rem; font-weight:700; margin-top:6px;">Enter Your Vault Invite Code</h1>
+        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:4px;">
+          Your secret code unlocks your household's Zero-Knowledge encrypted vault. Neither our company nor developers can view your stored reports without your code.
+        </p>
       </div>
 
-      <div style="background:var(--primary-soft); border:1.5px solid var(--primary-light); border-radius:16px; padding:16px; text-align:center;" class="space-y">
-        <span class="badge badge-teal">Instant Trial • No Signup Required</span>
-        <p style="font-size:0.8rem; color:#334155;">Scan a blood report, decode a prescription, or ask a health question right now.</p>
-        <button onclick="startGuestSession()" class="btn btn-primary" style="width:100%; padding:13px;">
-          <i data-lucide="zap" style="width:16px;height:16px;"></i> Continue as Guest
-        </button>
-      </div>
+      <div id="loginErrorBox" class="hidden" style="background:var(--danger-soft); color:var(--danger); padding:10px 12px; border-radius:10px; font-size:0.8rem; font-weight:600;"></div>
 
-      <form onsubmit="signInWithProfile(event)" class="space-y" style="padding-top:8px; border-top:1px solid var(--border);">
+      <form onsubmit="submitInviteCodeLogin(event)" class="space-y">
         <div>
-          <label style="font-size:0.78rem; font-weight:700;">Your Name</label>
-          <input id="loginName" type="text" required placeholder="e.g., Rahul Sharma" class="input-field" style="margin-top:4px;" />
+          <label for="inviteCodeInput" style="font-size:0.78rem; font-weight:600;">Household Invite Code or Family Role Code</label>
+          <input id="inviteCodeInput" type="password" required placeholder="e.g., ARUN-FAMILY-2026" class="input-field" style="margin-top:4px; font-weight:600; letter-spacing:0.04em;" />
         </div>
-        <div>
-          <label style="font-size:0.78rem; font-weight:700;">Email Address</label>
-          <input id="loginEmail" type="email" required placeholder="you@example.com" class="input-field" style="margin-top:4px;" />
-        </div>
-        <button type="submit" class="btn btn-outline" style="width:100%; padding:12px; background:#0F172A; color:#fff;">
-          Sign In to Family Vault
+
+        <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.76rem; color:var(--text-muted); background:#F9FAFB; padding:10px; border-radius:10px; border:1px solid var(--border); cursor:pointer;">
+          <input id="betaConsentCheck" type="checkbox" checked style="margin-top:3px;" />
+          <span>
+            <strong>Beta & Educational Consent:</strong> I understand this tool simplifies medical information for educational purposes only and is not a substitute for a doctor's advice. Personal identifiers are reduced before AI analysis.
+          </span>
+        </label>
+
+        <button id="loginSubmitBtn" type="submit" class="btn btn-primary" style="width:100%; padding:12px;">
+          Unlock Family Vault
         </button>
       </form>
     </div>

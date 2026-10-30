@@ -1,5 +1,6 @@
 # app/services/embeddings.py
 import os
+import hashlib
 import numpy as np
 from google import genai
 from google.genai import types
@@ -11,10 +12,6 @@ VECTOR_DIM = 768
 
 
 def generate_local_embedding(text: str) -> list[float]:
-    """
-    Uses Google's free `gemini-embedding-001` API (0 MB local RAM used!).
-    Outputs a normalized 768-dimensional vector compatible with our SQLAlchemy + pgvector schema.
-    """
     if not text or not text.strip():
         return [0.0] * VECTOR_DIM
 
@@ -30,12 +27,13 @@ def generate_local_embedding(text: str) -> list[float]:
             vec = np.array(res.embeddings[0].values, dtype=float)
             norm = np.linalg.norm(vec)
             return (vec / norm).tolist() if norm > 0 else vec.tolist()
-        except Exception as e:
-            print(f"Embedding API warning (using lightweight fallback): {e}")
+        except Exception:
+            pass
 
-    # Ultra-lightweight 0-RAM fallback if internet/quota is temporarily unavailable
+    # Deterministic hashlib fallback (consistent across server restarts)
     vec = np.zeros(VECTOR_DIM, dtype=float)
     for word in text.lower().split():
-        vec[hash(word) % VECTOR_DIM] += 1.0
+        digest = int(hashlib.md5(word.encode("utf-8")).hexdigest()[:8], 16)
+        vec[digest % VECTOR_DIM] += 1.0
     norm = np.linalg.norm(vec)
     return (vec / norm).tolist() if norm > 0 else vec.tolist()

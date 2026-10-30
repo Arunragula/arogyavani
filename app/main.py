@@ -1,47 +1,70 @@
 # app/main.py
 import os
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
-from app.schemas.models import SpeakRequest, DirectQuestionRequest, FamilyMemberCreate
+from app.schemas.models import (
+    SpeakRequest,
+    DirectQuestionRequest,
+    FamilyMemberCreate,
+    RoleCodeCreate,
+)
 from app.services.extractor import extract_multiple_documents
 from app.services.scrubber import scrub_personal_details
 from app.services.analyzer import analyze_medical_report, answer_direct_health_question
 from app.services.prescription import analyze_prescription_or_strip
-from app.services.db_vector import (
-    compute_document_hash,
-    get_cached_report_by_hash,
-    translate_existing_vault_record,
-    save_report_to_db,
-    search_member_history_vectors,
-    save_qa_log,
-    export_training_dataset,
-    create_or_update_family_member,
-    list_all_family_members,
-    get_member_timeline,
-    get_single_vault_record,
-    delete_vault_record,
-)
 from app.services.guardrails import (
     enforce_question_guardrail_precheck,
     enforce_extracted_text_guardrail,
     enforce_ai_output_guardrail,
 )
-from app.services.voice_tts import generate_voice_mp3, AUDIO_DIR
-from app.services.db_vector import VAULT_FILES_DIR
+from app.services.auth_limiter import (
+    limiter,
+    verify_vault_access,
+    require_write_permission,
+    require_owner_permission,
+    check_and_increment_daily_quota,
+)
+from app.services.db_vector import (
+    compute_document_hash,
+    get_cached_report_by_hash,
+    translate_existing_vault_record,
+    save_report_to_db,
+    get_report_context_for_prescription,
+    attach_prescription_to_existing_report,
+    read_decrypted_vault_file,
+    search_member_history_vectors,
+    create_or_update_family_member,
+    list_all_family_members,
+    get_member_timeline,
+    get_single_vault_record,
+    delete_vault_record,
+    create_family_role_code,
+    list_household_roles,
+    revoke_household_role,
+)
+from app.services.voice_tts import stream_voice_mp3_bytes
 
-app = FastAPI(title="CuraVault AI Platform", version="1.0.0")
+app = FastAPI(title="ArogyaVani / CuraVault AI", version="7.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000").split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -49,7 +72,12 @@ os.makedirs("frontend/assets/images", exist_ok=True)
 app.mount("/assets", StaticFiles(directory="frontend/assets"), name="assets")
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
-app.mount("/vault-files", StaticFiles(directory=VAULT_FILES_DIR), name="vault_files")
+
+# Render Health Check
+@app.get("/healthz", include_in_schema=False)
+def render_health_check():
+    return {"status": "ok"}
+
 
 # Multi-Page HTML Routes
 @app.get("/", include_in_schema=False)
@@ -78,170 +106,297 @@ def contact_page():
 
 
 # ==========================================
-# 1. DETERMINISTIC REPORT & RX ANALYZERS
+# 1. AUTH CHECK & FAMILY ROLE MANAGEMENT
 # ==========================================
 
-async def _process_medical_upload(
-    files: List[UploadFile], member_id: str, language: str, doc_category: str
+@app.get("/api/v1/auth/me", tags=["1. Access & Roles"])
+@limiter.limit("20/minute")
+def verify_current_code(request: Request, auth: dict = Depends(verify_vault_access)):
+    return {
+        "authenticated": True,
+        "role": auth["role"],
+        "label": auth["label"],
+        "allowed_member_id": auth["allowed_member_id"],
+    }
+
+
+@app.get("/api/v1/vault/roles", tags=["1. Access & Roles"])
+def get_vault_roles(auth: dict = Depends(verify_vault_access)):
+    require_owner_permission(auth)
+    return {"roles": list_household_roles(auth["household_id"])}
+
+
+@app.post("/api/v1/vault/roles", tags=["1. Access & Roles"])
+def assign_family_role(payload: RoleCodeCreate, auth: dict = Depends(verify_vault_access)):
+    """Only the Vault Creator ('owner') can assign 'editor' or 'viewer' codes to family members."""
+    require_owner_permission(auth)
+    try:
+        created = create_family_role_code(auth["household_id"], auth["vault_key"], payload.model_dump())
+        return {"created": True, "role_info": created}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+
+
+@app.delete("/api/v1/vault/roles/{role_id}", tags=["1. Access & Roles"])
+def remove_family_role(role_id: str, auth: dict = Depends(verify_vault_access)):
+    require_owner_permission(auth)
+    if not revoke_household_role(auth["household_id"], role_id):
+        raise HTTPException(status_code=404, detail="Role not found or cannot revoke owner.")
+    return {"revoked": True}
+
+
+# ==========================================
+# 2. REPORT, PRESCRIPTION & LINKED RX ROUTES
+# ==========================================
+
+def _handle_medical_upload_sync(
+    files: List[UploadFile],
+    member_id: str,
+    language: str,
+    save_to_vault: bool,
+    doc_category: str,
+    auth: dict,
 ):
-    if len(files) > 10:
-        raise HTTPException(status_code=400, detail="Maximum 10 files allowed.")
+    require_write_permission(auth, member_id)
+    files_data = [(f.filename or "upload.jpg", f.file.read()) for f in files]
 
-    files_data = [(f.filename, await f.read()) for f in files]
-    if not files_data:
-        raise HTTPException(status_code=400, detail="Uploaded files are empty.")
-
-    # Check SHA-256 Document Hash in DB first
-    doc_hash = compute_document_hash(member_id, doc_category, files_data)
-    cached = get_cached_report_by_hash(doc_hash, language)
+    doc_hash = compute_document_hash(auth["household_id"], member_id, doc_category, files_data)
+    cached = get_cached_report_by_hash(auth["household_id"], doc_hash, language, auth["vault_key"])
     if cached:
         return cached
 
-    # Extract text from image/PDF
+    check_and_increment_daily_quota(auth["household_id"], "report")
+
     extraction_result = extract_multiple_documents(files_data)
     raw_text = extraction_result["combined_raw_text"]
-
-    # 🛡️ GUARDRAIL CHECKPOINT 1 (Local OCR Text Gate — Blocks Resumes, Bills, Code, Non-Medical Images in 0ms!)
     enforce_extracted_text_guardrail(raw_text, doc_category)
 
-    # Scrub PII locally
     scrub_result = scrub_personal_details(raw_text)
 
-    # Analyze with Gemini Fallback Chain
     if doc_category == "prescription":
         ai_analysis = analyze_prescription_or_strip(scrub_result["clean_text"], language)
     else:
         ai_analysis = analyze_medical_report(scrub_result["clean_text"], language)
 
-    # 🛡️ GUARDRAIL CHECKPOINT 2 & 3 (AI Confidence Score >= 75 + Non-Empty Medical Items Check!)
     enforce_ai_output_guardrail(ai_analysis, mode=doc_category)
 
-    # Save to Family Vault DB ONLY if all 3 Guardrail Checkpoints pass!
-    # Save to Family Vault DB + Save Original Images/PDFs to vault_uploads/
-    db_info = save_report_to_db(
-        member_id=member_id,
-        document_hash=doc_hash,
-        files_data=files_data,
-        language=language,
-        demographics=scrub_result["demographics_preserved"],
-        clean_text=scrub_result["clean_text"],
-        ai_analysis=ai_analysis,
-    )
+    # Respect user's Privacy & Control Checkbox ("Save encrypted to Family Vault")
+    if save_to_vault:
+        db_info = save_report_to_db(
+            household_id=auth["household_id"],
+            vault_key=auth["vault_key"],
+            member_id=member_id,
+            document_hash=doc_hash,
+            files_data=files_data,
+            language=language,
+            demographics=scrub_result["demographics_preserved"],
+            clean_text=scrub_result["clean_text"],
+            ai_analysis=ai_analysis,
+        )
+        return {
+            "report_id": db_info["report_id"],
+            "member_id": member_id,
+            "date_uploaded": db_info["date_uploaded"],
+            "selected_language": language,
+            "saved_to_vault": True,
+            "stored_files": db_info["stored_files"],
+            "demographics": scrub_result["demographics_preserved"],
+            "ai_explanation": ai_analysis,
+            "attached_prescriptions": [],
+        }
 
     return {
-        "report_id": db_info["report_id"],
+        "report_id": None,
         "member_id": member_id,
-        "date_uploaded": db_info["date_uploaded"],
         "selected_language": language,
-        "loaded_from_vault_cache": False,
-        "stored_files": db_info["stored_files"],
+        "saved_to_vault": False,
+        "stored_files": [],
         "demographics": scrub_result["demographics_preserved"],
         "ai_explanation": ai_analysis,
+        "attached_prescriptions": [],
     }
-@app.post("/api/v1/analyze-report", tags=["1. Medical Analyzers"])
-async def analyze_multi_page_report(
+
+
+@app.post("/api/v1/analyze-report", tags=["2. Medical Analyzers"])
+@limiter.limit("20/minute")
+def analyze_multi_page_report(
+    request: Request,
     files: List[UploadFile] = File(...),
     member_id: str = Form("self"),
     language: str = Form("English"),
+    privacy_consent: bool = Form(True),
+    save_to_vault: bool = Form(True),
+    auth: dict = Depends(verify_vault_access),
 ):
-    return await _process_medical_upload(files, member_id, language, "lab_report")
+    if not privacy_consent:
+        raise HTTPException(status_code=400, detail="Please accept the Privacy & Educational Consent checkbox.")
+    return _handle_medical_upload_sync(files, member_id, language, save_to_vault, "lab_report", auth)
 
 
-@app.post("/api/v1/analyze-prescription", tags=["1. Medical Analyzers"])
-async def decode_prescription_or_medicine_strip(
+@app.post("/api/v1/analyze-prescription", tags=["2. Medical Analyzers"])
+@limiter.limit("20/minute")
+def decode_prescription_or_medicine_strip(
+    request: Request,
     files: List[UploadFile] = File(...),
     member_id: str = Form("self"),
     language: str = Form("English"),
+    privacy_consent: bool = Form(True),
+    save_to_vault: bool = Form(True),
+    auth: dict = Depends(verify_vault_access),
 ):
-    return await _process_medical_upload(files, member_id, language, "prescription")
+    if not privacy_consent:
+        raise HTTPException(status_code=400, detail="Please accept the Privacy & Educational Consent checkbox.")
+    return _handle_medical_upload_sync(files, member_id, language, save_to_vault, "prescription", auth)
+
+
+@app.post("/api/v1/vault/records/{report_id}/attach-prescription", tags=["2. Medical Analyzers"])
+@limiter.limit("20/minute")
+def attach_prescribed_medicines_to_report(
+    request: Request,
+    report_id: str,
+    files: List[UploadFile] = File(...),
+    language: str = Form("English"),
+    auth: dict = Depends(verify_vault_access),
+):
+    """
+    Uploads and links prescribed medicines directly under an existing Lab Report
+    so the Lab Report + Prescribed Medicines stay intact together in the Family Vault!
+    """
+    require_write_permission(auth)
+    check_and_increment_daily_quota(auth["household_id"], "report")
+
+    files_data = [(f.filename or "rx.jpg", f.file.read()) for f in files]
+    extraction_result = extract_multiple_documents(files_data)
+    raw_text = extraction_result["combined_raw_text"]
+    enforce_extracted_text_guardrail(raw_text, "prescription")
+
+    scrub_result = scrub_personal_details(raw_text)
+    report_context = get_report_context_for_prescription(auth["household_id"], report_id, auth["vault_key"])
+
+    combined_input = f"{report_context}\n\n{scrub_result['clean_text']}"
+    rx_analysis = analyze_prescription_or_strip(combined_input, language)
+    enforce_ai_output_guardrail(rx_analysis, mode="prescription")
+
+    updated = attach_prescription_to_existing_report(
+        household_id=auth["household_id"],
+        vault_key=auth["vault_key"],
+        report_id=report_id,
+        files_data=files_data,
+        rx_analysis=rx_analysis,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Parent report not found in vault.")
+    return updated
 
 
 # ==========================================
-# 2. FAMILY VAULT & INSTANT TRANSLATION
+# 3. ZERO-KNOWLEDGE FAMILY VAULT ROUTES
 # ==========================================
 
-@app.post("/api/v1/vault/members", tags=["2. Family Health Vault"])
-def add_or_update_family_member(payload: FamilyMemberCreate):
-    return create_or_update_family_member(payload.model_dump())
+@app.post("/api/v1/vault/members", tags=["3. Family Health Vault"])
+def add_or_update_family_member(payload: FamilyMemberCreate, auth: dict = Depends(verify_vault_access)):
+    require_write_permission(auth, payload.member_id)
+    return create_or_update_family_member(auth["household_id"], payload.model_dump())
 
 
-@app.get("/api/v1/vault/members", tags=["2. Family Health Vault"])
-def get_all_family_members():
-    return {"family_members": list_all_family_members()}
+@app.get("/api/v1/vault/members", tags=["3. Family Health Vault"])
+def get_all_family_members(auth: dict = Depends(verify_vault_access)):
+    return {
+        "role": auth["role"],
+        "family_members": list_all_family_members(auth["household_id"], auth["allowed_member_id"]),
+    }
 
 
-@app.get("/api/v1/vault/members/{member_id}/timeline", tags=["2. Family Health Vault"])
-def get_family_member_health_timeline(member_id: str):
-    return get_member_timeline(member_id)
+@app.get("/api/v1/vault/members/{member_id}/timeline", tags=["3. Family Health Vault"])
+def get_family_member_health_timeline(member_id: str, auth: dict = Depends(verify_vault_access)):
+    if auth["allowed_member_id"] != "*" and auth["allowed_member_id"] != member_id.lower().strip():
+        raise HTTPException(status_code=403, detail="Access restricted to your assigned family profile.")
+    return get_member_timeline(auth["household_id"], member_id, auth["vault_key"])
 
 
-@app.get("/api/v1/vault/records/{report_id}", tags=["2. Family Health Vault"])
-def open_stored_vault_record(report_id: str, language: Optional[str] = Query(None)):
-    record = get_single_vault_record(report_id, language)
+@app.get("/api/v1/vault/records/{report_id}", tags=["3. Family Health Vault"])
+def open_stored_vault_record(
+    report_id: str,
+    language: Optional[str] = Query(None),
+    auth: dict = Depends(verify_vault_access),
+):
+    record = get_single_vault_record(auth["household_id"], report_id, auth["vault_key"], language)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found.")
     return record
 
 
-@app.post("/api/v1/vault/records/{report_id}/translate", tags=["2. Family Health Vault"])
-def translate_open_record(report_id: str, language: str = Query("English")):
-    """Translates an already-stored report into a new language while keeping all medical numbers locked."""
-    record = translate_existing_vault_record(report_id, language)
+@app.post("/api/v1/vault/records/{report_id}/translate", tags=["3. Family Health Vault"])
+def translate_open_record(
+    report_id: str,
+    language: str = Query("English"),
+    auth: dict = Depends(verify_vault_access),
+):
+    record = translate_existing_vault_record(auth["household_id"], report_id, language, auth["vault_key"])
     if not record:
         raise HTTPException(status_code=404, detail="Record not found.")
     return record
 
 
-@app.delete("/api/v1/vault/records/{report_id}", tags=["2. Family Health Vault"])
-def remove_vault_record(report_id: str):
-    if not delete_vault_record(report_id):
+@app.get("/api/v1/vault/records/{report_id}/files/{file_id}", tags=["3. Family Health Vault"])
+def get_decrypted_vault_document(
+    report_id: str,
+    file_id: str,
+    auth: dict = Depends(verify_vault_access),
+):
+    """Decrypts the compressed WebP/PDF in memory ONLY for an authenticated household member!"""
+    try:
+        decrypted_bytes, mime_type = read_decrypted_vault_file(
+            auth["household_id"], report_id, file_id, auth["vault_key"]
+        )
+        return Response(content=decrypted_bytes, media_type=mime_type)
+    except FileNotFoundError as fnf:
+        raise HTTPException(status_code=404, detail=str(fnf))
+
+
+@app.delete("/api/v1/vault/records/{report_id}", tags=["3. Family Health Vault"])
+def remove_vault_record(report_id: str, auth: dict = Depends(verify_vault_access)):
+    require_owner_permission(auth)
+    if not delete_vault_record(auth["household_id"], report_id):
         raise HTTPException(status_code=404, detail="Record not found.")
     return {"deleted": True, "report_id": report_id}
 
 
 # ==========================================
-# 3. DIRECT Q&A CHAT & ON-DEMAND VOICE
+# 4. DIRECT Q&A CHAT & MEMORY-STREAMED VOICE
 # ==========================================
 
-@app.post("/api/v1/ask-question", tags=["3. Q&A & Voice"])
-async def ask_direct_health_or_history_question(payload: DirectQuestionRequest):
-    # 🛡️ GUARDRAIL CHECKPOINT 1 (0ms Local Regex & Jailbreak Blocker)
+@app.post("/api/v1/ask-question", tags=["4. Q&A & Voice"])
+@limiter.limit("20/minute")
+def ask_direct_health_or_history_question(
+    request: Request,
+    payload: DirectQuestionRequest,
+    auth: dict = Depends(verify_vault_access),
+):
     enforce_question_guardrail_precheck(payload.question)
+    check_and_increment_daily_quota(auth["household_id"], "question")
 
     past_reports = (
-        search_member_history_vectors(payload.member_id, payload.question, top_k=3)
+        search_member_history_vectors(
+            auth["household_id"], payload.member_id, payload.question, auth["vault_key"], top_k=3
+        )
         if payload.use_past_history
         else []
     )
     ai_response = answer_direct_health_question(payload.question, payload.language, past_reports)
-
-    # 🛡️ GUARDRAIL CHECKPOINT 2 (AI Confidence Score >= 75 & Strict Domain Check)
     enforce_ai_output_guardrail(ai_response, mode="chat")
 
-    save_qa_log(payload.member_id, payload.language, payload.question, ai_response)
     return {"member_id": payload.member_id, "response": ai_response}
 
 
-@app.post("/api/v1/speak", tags=["3. Q&A & Voice"])
-async def generate_voice_on_demand(payload: SpeakRequest):
-    tts_result = await generate_voice_mp3(payload.text, payload.language)
-    return {
-        "audio_filename": tts_result["audio_filename"],
-        "play_url": f"/api/v1/audio/{tts_result['audio_filename']}",
-    }
-
-
-@app.get("/api/v1/audio/{filename}", tags=["3. Q&A & Voice"])
-async def play_generated_audio(filename: str):
-    filepath = os.path.join(AUDIO_DIR, filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Audio not found.")
-    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
-
-
-@app.get("/api/v1/training-dataset/export", tags=["3. Q&A & Voice"])
-def get_collected_training_dataset():
-    data = export_training_dataset()
-    return {"total_training_records": len(data), "dataset": data}
-
-
+@app.post("/api/v1/speak", tags=["4. Q&A & Voice"])
+@limiter.limit("20/minute")
+async def generate_voice_on_demand(
+    request: Request,
+    payload: SpeakRequest,
+    auth: dict = Depends(verify_vault_access),
+):
+    """Streams MP3 audio directly from memory behind X-Invite-Code auth!"""
+    check_and_increment_daily_quota(auth["household_id"], "speech")
+    audio_bytes = await stream_voice_mp3_bytes(payload.text, payload.language)
+    return Response(content=audio_bytes, media_type="audio/mpeg")
