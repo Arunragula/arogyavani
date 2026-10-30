@@ -1,5 +1,7 @@
 # app/main.py
 import os
+import logging
+from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,7 @@ from fastapi.responses import FileResponse, Response
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.db.database import engine, Base, IS_POSTGRES
 from app.schemas.models import (
     SpeakRequest,
     DirectQuestionRequest,
@@ -26,6 +29,7 @@ from app.services.guardrails import (
 from app.services.auth_limiter import (
     limiter,
     verify_vault_access,
+    enforce_member_scope,
     require_write_permission,
     require_owner_permission,
     check_and_increment_daily_quota,
@@ -35,7 +39,7 @@ from app.services.db_vector import (
     get_cached_report_by_hash,
     translate_existing_vault_record,
     save_report_to_db,
-    get_report_context_for_prescription,
+    verify_and_get_parent_report_context,
     attach_prescription_to_existing_report,
     read_decrypted_vault_file,
     search_member_history_vectors,
@@ -50,7 +54,20 @@ from app.services.db_vector import (
 )
 from app.services.voice_tts import stream_voice_mp3_bytes
 
-app = FastAPI(title="ArogyaVani / CuraVault AI", version="7.0.0")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("arogyavani")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # For local SQLite dev/tests, ensure tables exist; on Postgres, Alembic manages schema
+    if not IS_POSTGRES:
+        Base.metadata.create_all(bind=engine)
+    logger.info("ArogyaVani / CuraVault AI startup complete.")
+    yield
+
+
+app = FastAPI(title="ArogyaVani / CuraVault AI", version="8.0.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -73,13 +90,11 @@ app.mount("/assets", StaticFiles(directory="frontend/assets"), name="assets")
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
 
-# Render Health Check
 @app.get("/healthz", include_in_schema=False)
 def render_health_check():
     return {"status": "ok"}
 
 
-# Multi-Page HTML Routes
 @app.get("/", include_in_schema=False)
 def home_page():
     return FileResponse("frontend/index.html")
@@ -128,13 +143,9 @@ def get_vault_roles(auth: dict = Depends(verify_vault_access)):
 
 @app.post("/api/v1/vault/roles", tags=["1. Access & Roles"])
 def assign_family_role(payload: RoleCodeCreate, auth: dict = Depends(verify_vault_access)):
-    """Only the Vault Creator ('owner') can assign 'editor' or 'viewer' codes to family members."""
     require_owner_permission(auth)
-    try:
-        created = create_family_role_code(auth["household_id"], auth["vault_key"], payload.model_dump())
-        return {"created": True, "role_info": created}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+    created = create_family_role_code(auth["household_id"], auth["vault_key"], payload.model_dump())
+    return {"created": True, "role_info": created}
 
 
 @app.delete("/api/v1/vault/roles/{role_id}", tags=["1. Access & Roles"])
@@ -161,10 +172,18 @@ def _handle_medical_upload_sync(
     files_data = [(f.filename or "upload.jpg", f.file.read()) for f in files]
 
     doc_hash = compute_document_hash(auth["household_id"], member_id, doc_category, files_data)
-    cached = get_cached_report_by_hash(auth["household_id"], doc_hash, language, auth["vault_key"])
+    cached = get_cached_report_by_hash(
+        auth["household_id"],
+        doc_hash,
+        language,
+        auth["vault_key"],
+        allowed_member_id=auth["allowed_member_id"],
+        on_new_translation_callback=lambda: check_and_increment_daily_quota(auth["household_id"], "report"),
+    )
     if cached:
         return cached
 
+    # P1 #6 Fix: Count EVERY new analysis before running OCR/Gemini (even if save_to_vault=False!)
     check_and_increment_daily_quota(auth["household_id"], "report")
 
     extraction_result = extract_multiple_documents(files_data)
@@ -180,7 +199,6 @@ def _handle_medical_upload_sync(
 
     enforce_ai_output_guardrail(ai_analysis, mode=doc_category)
 
-    # Respect user's Privacy & Control Checkbox ("Save encrypted to Family Vault")
     if save_to_vault:
         db_info = save_report_to_db(
             household_id=auth["household_id"],
@@ -258,11 +276,13 @@ def attach_prescribed_medicines_to_report(
     language: str = Form("English"),
     auth: dict = Depends(verify_vault_access),
 ):
-    """
-    Uploads and links prescribed medicines directly under an existing Lab Report
-    so the Lab Report + Prescribed Medicines stay intact together in the Family Vault!
-    """
     require_write_permission(auth)
+
+    # P1 #11 Fix: Verify parent report exists AND matches allowed_member_id BEFORE spending Gemini quota!
+    report_context = verify_and_get_parent_report_context(
+        auth["household_id"], report_id, auth["vault_key"], auth["allowed_member_id"]
+    )
+
     check_and_increment_daily_quota(auth["household_id"], "report")
 
     files_data = [(f.filename or "rx.jpg", f.file.read()) for f in files]
@@ -271,26 +291,22 @@ def attach_prescribed_medicines_to_report(
     enforce_extracted_text_guardrail(raw_text, "prescription")
 
     scrub_result = scrub_personal_details(raw_text)
-    report_context = get_report_context_for_prescription(auth["household_id"], report_id, auth["vault_key"])
-
     combined_input = f"{report_context}\n\n{scrub_result['clean_text']}"
     rx_analysis = analyze_prescription_or_strip(combined_input, language)
     enforce_ai_output_guardrail(rx_analysis, mode="prescription")
 
-    updated = attach_prescription_to_existing_report(
+    return attach_prescription_to_existing_report(
         household_id=auth["household_id"],
         vault_key=auth["vault_key"],
         report_id=report_id,
         files_data=files_data,
         rx_analysis=rx_analysis,
+        allowed_member_id=auth["allowed_member_id"],
     )
-    if not updated:
-        raise HTTPException(status_code=404, detail="Parent report not found in vault.")
-    return updated
 
 
 # ==========================================
-# 3. ZERO-KNOWLEDGE FAMILY VAULT ROUTES
+# 3. ENCRYPTED FAMILY VAULT ROUTES
 # ==========================================
 
 @app.post("/api/v1/vault/members", tags=["3. Family Health Vault"])
@@ -309,8 +325,7 @@ def get_all_family_members(auth: dict = Depends(verify_vault_access)):
 
 @app.get("/api/v1/vault/members/{member_id}/timeline", tags=["3. Family Health Vault"])
 def get_family_member_health_timeline(member_id: str, auth: dict = Depends(verify_vault_access)):
-    if auth["allowed_member_id"] != "*" and auth["allowed_member_id"] != member_id.lower().strip():
-        raise HTTPException(status_code=403, detail="Access restricted to your assigned family profile.")
+    enforce_member_scope(auth, member_id)
     return get_member_timeline(auth["household_id"], member_id, auth["vault_key"])
 
 
@@ -320,7 +335,14 @@ def open_stored_vault_record(
     language: Optional[str] = Query(None),
     auth: dict = Depends(verify_vault_access),
 ):
-    record = get_single_vault_record(auth["household_id"], report_id, auth["vault_key"], language)
+    record = get_single_vault_record(
+        auth["household_id"],
+        report_id,
+        auth["vault_key"],
+        language=language,
+        allowed_member_id=auth["allowed_member_id"],
+        on_new_translation_callback=lambda: check_and_increment_daily_quota(auth["household_id"], "report"),
+    )
     if not record:
         raise HTTPException(status_code=404, detail="Record not found.")
     return record
@@ -332,7 +354,14 @@ def translate_open_record(
     language: str = Query("English"),
     auth: dict = Depends(verify_vault_access),
 ):
-    record = translate_existing_vault_record(auth["household_id"], report_id, language, auth["vault_key"])
+    record = translate_existing_vault_record(
+        auth["household_id"],
+        report_id,
+        language,
+        auth["vault_key"],
+        allowed_member_id=auth["allowed_member_id"],
+        on_new_translation_callback=lambda: check_and_increment_daily_quota(auth["household_id"], "report"),
+    )
     if not record:
         raise HTTPException(status_code=404, detail="Record not found.")
     return record
@@ -344,10 +373,9 @@ def get_decrypted_vault_document(
     file_id: str,
     auth: dict = Depends(verify_vault_access),
 ):
-    """Decrypts the compressed WebP/PDF in memory ONLY for an authenticated household member!"""
     try:
         decrypted_bytes, mime_type = read_decrypted_vault_file(
-            auth["household_id"], report_id, file_id, auth["vault_key"]
+            auth["household_id"], report_id, file_id, auth["vault_key"], auth["allowed_member_id"]
         )
         return Response(content=decrypted_bytes, media_type=mime_type)
     except FileNotFoundError as fnf:
@@ -373,6 +401,8 @@ def ask_direct_health_or_history_question(
     payload: DirectQuestionRequest,
     auth: dict = Depends(verify_vault_access),
 ):
+    # P1 #7 Fix: Enforce member restriction on /ask-question too!
+    enforce_member_scope(auth, payload.member_id)
     enforce_question_guardrail_precheck(payload.question)
     check_and_increment_daily_quota(auth["household_id"], "question")
 
@@ -396,7 +426,6 @@ async def generate_voice_on_demand(
     payload: SpeakRequest,
     auth: dict = Depends(verify_vault_access),
 ):
-    """Streams MP3 audio directly from memory behind X-Invite-Code auth!"""
     check_and_increment_daily_quota(auth["household_id"], "speech")
     audio_bytes = await stream_voice_mp3_bytes(payload.text, payload.language)
     return Response(content=audio_bytes, media_type="audio/mpeg")

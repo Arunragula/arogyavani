@@ -121,7 +121,19 @@ function selectMember(memberId) {
 }
 
 function handleFileSelect(e) {
-  selectedFiles = Array.from(e.target.files).slice(0, 5);
+  const rawFiles = Array.from(e.target.files).slice(0, 5);
+  const errBox = document.getElementById("scannerErrorBox");
+  const errText = document.getElementById("scannerErrorText");
+  for (const f of rawFiles) {
+    if (f.size > 10 * 1024 * 1024) {
+      errText.textContent = `File "${f.name}" is larger than 10 MB. Please select a smaller file.`;
+      errBox.classList.remove("hidden");
+      e.target.value = "";
+      return;
+    }
+  }
+  errBox.classList.add("hidden");
+  selectedFiles = rawFiles;
   if (!selectedFiles.length) return;
   document.getElementById("selectedFilesBox").classList.remove("hidden");
   document.getElementById("filePills").innerHTML = selectedFiles
@@ -659,7 +671,6 @@ async function loadHouseholdRoles() {
 
 async function createFamilyRole() {
   const payload = {
-    share_code: document.getElementById("r_code").value.trim(),
     label: document.getElementById("r_label").value.trim(),
     role: document.getElementById("r_role").value,
     allowed_member_id: document.getElementById("r_member").value.trim() || "*",
@@ -670,13 +681,20 @@ async function createFamilyRole() {
     body: JSON.stringify(payload),
   });
   const data = await res.json();
+  const box = document.getElementById("rolesListBox");
   if (!res.ok) {
-    alert(data.detail || "Could not create role code.");
+    box.insertAdjacentHTML("beforebegin", `<p style="color:var(--danger);font-size:0.78rem;">${escapeHtml(data.detail || "Failed")}</p>`);
     return;
   }
-  document.getElementById("r_code").value = "";
   document.getElementById("r_label").value = "";
-  loadHouseholdRoles();
+  await loadHouseholdRoles();
+  box.insertAdjacentHTML(
+    "afterbegin",
+    `<div style="background:var(--success-soft);border:1px solid #A7F3D0;padding:10px;border-radius:8px;font-size:0.78rem;">
+       <strong>✅ Copy Share Code Now (Shown Once):</strong>
+       <code style="display:block;margin-top:4px;font-weight:700;user-select:all;">${escapeHtml(data.role_info.generated_share_code)}</code>
+     </div>`
+  );
 }
 
 // ASK HEALTH AI (WITH URGENT EMERGENCY BANNER)

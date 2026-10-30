@@ -1,11 +1,13 @@
 # app/services/db_vector.py
-import os
 import uuid
+import secrets
 import hashlib
+import logging
 import numpy as np
+from fastapi import HTTPException
 from sqlalchemy import func
-from app.db.database import engine, SessionLocal, Base, IS_POSTGRES, init_pgvector_extension
-from app.db.models import VaultAccessRole, FamilyMember, MedicalReport
+from app.db.database import SessionLocal, IS_POSTGRES
+from app.db.models import VaultAccessRole, FamilyMember, MedicalReport, VaultFileBlob
 from app.services.embeddings import generate_local_embedding
 from app.services.analyzer import translate_locked_report
 from app.services.crypto_vault import (
@@ -18,33 +20,43 @@ from app.services.crypto_vault import (
     compress_image_for_free_storage,
 )
 
-VAULT_FILES_DIR = "vault_uploads"
-os.makedirs(VAULT_FILES_DIR, exist_ok=True)
+logger = logging.getLogger(__name__)
 
-init_pgvector_extension()
-Base.metadata.create_all(bind=engine)
+
+def _verify_record_member_scope(record: MedicalReport, allowed_member_id: str):
+    """P1 #7 Fix: Ensures a code scoped to 'mom' cannot read, translate, or attach to 'dad's report_id."""
+    if allowed_member_id != "*" and record.member_id != allowed_member_id.lower().strip():
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access Denied: This record belongs to '{record.member_id}', outside your allowed profile '{allowed_member_id}'.",
+        )
 
 
 # =========================================================
-# 1. COMPRESSED & ENCRYPTED FILE STORAGE
+# 1. NEON DB ENCRYPTED FILE STORAGE (SURVIVES RENDER DEPLOYS!)
 # =========================================================
 
-def save_encrypted_files_to_vault(
-    report_id: str, files_data: list, vault_key: bytes, prefix: str = "doc"
+def save_encrypted_files_to_db(
+    db, household_id: str, report_id: str, files_data: list, vault_key: bytes, prefix: str = "doc"
 ) -> list[dict]:
     """
-    1. Compresses 6 MB images down to ~120 KB WebP.
-    2. Encrypts the bytes with the user's secret AES-256 vault_key so nobody else can view them.
+    P1 #13 Fix: Compresses images to ~120 KB WebP, encrypts with AES-256,
+    and saves directly inside Neon Postgres (`vault_file_blobs`) so Render restarts NEVER lose files!
     """
     stored_files = []
     for idx, (orig_name, raw_bytes) in enumerate(files_data, start=1):
         compressed_bytes, mime_type = compress_image_for_free_storage(raw_bytes, orig_name)
         encrypted_bytes = encrypt_bytes_with_key(compressed_bytes, vault_key)
 
-        file_id = f"{report_id}_{prefix}_{idx}.enc"
-        filepath = os.path.join(VAULT_FILES_DIR, file_id)
-        with open(filepath, "wb") as f:
-            f.write(encrypted_bytes)
+        file_id = f"{report_id}_{prefix}_{idx}"
+        blob_row = VaultFileBlob(
+            file_id=file_id,
+            report_id=report_id,
+            household_id=household_id,
+            mime_type=mime_type,
+            encrypted_bytes=encrypted_bytes,
+        )
+        db.add(blob_row)
 
         stored_files.append({
             "file_id": file_id,
@@ -56,41 +68,35 @@ def save_encrypted_files_to_vault(
     return stored_files
 
 
-def read_decrypted_vault_file(household_id: str, report_id: str, file_id: str, vault_key: bytes) -> tuple[bytes, str]:
-    """Verifies household ownership and decrypts the requested image/PDF in memory."""
+def read_decrypted_vault_file(
+    household_id: str, report_id: str, file_id: str, vault_key: bytes, allowed_member_id: str = "*"
+) -> tuple[bytes, str]:
     db = SessionLocal()
     try:
         record = (
             db.query(MedicalReport)
-            .filter(
-                MedicalReport.report_id == report_id,
-                MedicalReport.household_id == household_id,
-            )
+            .filter(MedicalReport.report_id == report_id, MedicalReport.household_id == household_id)
             .first()
         )
         if not record:
             raise FileNotFoundError("Record not found or access denied.")
 
-        # Prevent path traversal
-        safe_file_id = os.path.basename(file_id)
-        if not safe_file_id.startswith(report_id):
-            raise FileNotFoundError("Invalid file reference.")
+        _verify_record_member_scope(record, allowed_member_id)
 
-        filepath = os.path.join(VAULT_FILES_DIR, safe_file_id)
-        if not os.path.exists(filepath):
-            raise FileNotFoundError("Encrypted file not found on storage.")
+        blob = (
+            db.query(VaultFileBlob)
+            .filter(
+                VaultFileBlob.file_id == file_id,
+                VaultFileBlob.report_id == report_id,
+                VaultFileBlob.household_id == household_id,
+            )
+            .first()
+        )
+        if not blob:
+            raise FileNotFoundError("Encrypted file not found in database.")
 
-        with open(filepath, "rb") as f:
-            encrypted_bytes = f.read()
-
-        decrypted_bytes = decrypt_bytes_with_key(encrypted_bytes, vault_key)
-
-        # Look up mime_type
-        mime_type = "image/webp"
-        for item in (record.filenames or []):
-            if isinstance(item, dict) and item.get("file_id") == safe_file_id:
-                mime_type = item.get("mime_type", "image/webp")
-        return decrypted_bytes, mime_type
+        decrypted_bytes = decrypt_bytes_with_key(blob.encrypted_bytes, vault_key)
+        return decrypted_bytes, blob.mime_type
     finally:
         db.close()
 
@@ -108,7 +114,12 @@ def compute_document_hash(household_id: str, member_id: str, doc_category: str, 
 
 
 def get_cached_report_by_hash(
-    household_id: str, doc_hash: str, requested_language: str, vault_key: bytes
+    household_id: str,
+    doc_hash: str,
+    requested_language: str,
+    vault_key: bytes,
+    allowed_member_id: str = "*",
+    on_new_translation_callback=None,
 ) -> dict | None:
     lang_key = requested_language.strip().capitalize()
     db = SessionLocal()
@@ -124,6 +135,8 @@ def get_cached_report_by_hash(
         if not record:
             return None
 
+        _verify_record_member_scope(record, allowed_member_id)
+
         canonical_json = decrypt_json_with_key(record.ai_analysis_enc, vault_key)
         translations = decrypt_json_with_key(record.translations_enc, vault_key) or {}
         if not translations and canonical_json:
@@ -132,6 +145,8 @@ def get_cached_report_by_hash(
         if lang_key in translations:
             ai_output = translations[lang_key]
         else:
+            if on_new_translation_callback:
+                on_new_translation_callback()
             ai_output = translate_locked_report(canonical_json, lang_key)
             translations[lang_key] = ai_output
             record.translations_enc = encrypt_json_with_key(translations, vault_key)
@@ -147,7 +162,7 @@ def get_cached_report_by_hash(
             "date_uploaded": record.created_at.strftime("%d %b %Y, %I:%M %p") if record.created_at else "",
             "selected_language": lang_key,
             "loaded_from_vault_cache": True,
-            "stored_files": record.filenames or [],
+            "stored_files": [f for f in (record.filenames or []) if "_rx" not in f.get("file_id", "")],
             "demographics": demographics,
             "ai_explanation": ai_output,
             "attached_prescriptions": attached_rx,
@@ -189,8 +204,6 @@ def save_report_to_db(
     clean_member = member_id.lower().strip()
     lang_key = language.strip().capitalize()
 
-    stored_files = save_encrypted_files_to_vault(report_id, files_data, vault_key, prefix="page")
-
     searchable_summary = (
         f"Report Type: {ai_analysis.get('report_type', '')}\n"
         f"Overall: {ai_analysis.get('overall_status', '')}\n"
@@ -201,6 +214,7 @@ def save_report_to_db(
     db = SessionLocal()
     try:
         ensure_member_exists(db, household_id, clean_member, demographics)
+        stored_files = save_encrypted_files_to_db(db, household_id, report_id, files_data, vault_key, prefix="page")
 
         new_report = MedicalReport(
             report_id=report_id,
@@ -230,11 +244,16 @@ def save_report_to_db(
 
 
 # =========================================================
-# 3. ATTACH PRESCRIBED MEDICINES DIRECTLY TO A LAB REPORT!
+# 3. ATTACH PRESCRIBED MEDICINES TO EXISTING REPORT
 # =========================================================
 
-def get_report_context_for_prescription(household_id: str, report_id: str, vault_key: bytes) -> str:
-    """Fetches the Lab Report summary so the attached prescription knows which report it is treating!"""
+def verify_and_get_parent_report_context(
+    household_id: str, report_id: str, vault_key: bytes, allowed_member_id: str = "*"
+) -> str:
+    """
+    P1 #7 & #11 Fix: Verifies the parent report exists AND matches allowed_member_id
+    BEFORE running OCR or spending Gemini quota!
+    """
     db = SessionLocal()
     try:
         record = (
@@ -243,7 +262,10 @@ def get_report_context_for_prescription(household_id: str, report_id: str, vault
             .first()
         )
         if not record:
-            return ""
+            raise HTTPException(status_code=404, detail="Parent report not found in your vault.")
+
+        _verify_record_member_scope(record, allowed_member_id)
+
         ai_data = decrypt_json_with_key(record.ai_analysis_enc, vault_key) or {}
         att = ai_data.get("attention_needed", [])
         att_str = ", ".join(f"{x.get('item')}: {x.get('your_value')}" for x in att)
@@ -258,11 +280,8 @@ def attach_prescription_to_existing_report(
     report_id: str,
     files_data: list,
     rx_analysis: dict,
-) -> dict | None:
-    """
-    Links decoded prescribed medicines + compressed prescription images directly inside
-    the parent Lab Report so both stay intact in one single Family Vault card!
-    """
+    allowed_member_id: str = "*",
+) -> dict:
     db = SessionLocal()
     try:
         record = (
@@ -271,18 +290,18 @@ def attach_prescription_to_existing_report(
             .first()
         )
         if not record:
-            return None
+            raise HTTPException(status_code=404, detail="Parent report not found.")
+
+        _verify_record_member_scope(record, allowed_member_id)
 
         existing_rx_list = decrypt_json_with_key(record.attached_prescriptions_enc, vault_key)
         if not isinstance(existing_rx_list, list):
             existing_rx_list = []
 
         rx_idx = len(existing_rx_list) + 1
-        rx_files = save_encrypted_files_to_vault(report_id, files_data, vault_key, prefix=f"rx{rx_idx}")
+        rx_files = save_encrypted_files_to_db(db, household_id, report_id, files_data, vault_key, prefix=f"rx{rx_idx}")
 
-        # Also append rx_files to record.filenames so the file decryptor recognizes them
-        all_files = list(record.filenames or []) + rx_files
-        record.filenames = all_files
+        record.filenames = list(record.filenames or []) + rx_files
 
         new_rx_entry = {
             "rx_id": f"rx_{uuid.uuid4().hex[:8]}",
@@ -302,11 +321,16 @@ def attach_prescription_to_existing_report(
 
 
 # =========================================================
-# 4. FAMILY VAULT TIMELINE, TRANSLATION & ROLE MANAGEMENT
+# 4. VAULT TIMELINE, TRANSLATION & SERVER-GENERATED ROLES
 # =========================================================
 
 def translate_existing_vault_record(
-    household_id: str, report_id: str, target_language: str, vault_key: bytes
+    household_id: str,
+    report_id: str,
+    target_language: str,
+    vault_key: bytes,
+    allowed_member_id: str = "*",
+    on_new_translation_callback=None,
 ) -> dict | None:
     lang_key = target_language.strip().capitalize()
     db = SessionLocal()
@@ -319,9 +343,13 @@ def translate_existing_vault_record(
         if not record:
             return None
 
+        _verify_record_member_scope(record, allowed_member_id)
+
         canonical_json = decrypt_json_with_key(record.ai_analysis_enc, vault_key)
         translations = decrypt_json_with_key(record.translations_enc, vault_key) or {}
         if lang_key not in translations:
+            if on_new_translation_callback:
+                on_new_translation_callback()
             translations[lang_key] = translate_locked_report(canonical_json, lang_key)
             record.translations_enc = encrypt_json_with_key(translations, vault_key)
             db.commit()
@@ -332,7 +360,7 @@ def translate_existing_vault_record(
             "date_uploaded": record.created_at.strftime("%d %b %Y, %I:%M %p") if record.created_at else "",
             "selected_language": lang_key,
             "loaded_from_vault_cache": True,
-            "stored_files": [f for f in (record.filenames or []) if "_page_" in f.get("file_id", "")],
+            "stored_files": [f for f in (record.filenames or []) if "_rx" not in f.get("file_id", "")],
             "demographics": decrypt_json_with_key(record.demographics_enc, vault_key) or {},
             "ai_explanation": translations[lang_key],
             "attached_prescriptions": decrypt_json_with_key(record.attached_prescriptions_enc, vault_key) or [],
@@ -466,10 +494,17 @@ def get_member_timeline(household_id: str, member_id: str, vault_key: bytes) -> 
 
 
 def get_single_vault_record(
-    household_id: str, report_id: str, vault_key: bytes, language: str = None
+    household_id: str,
+    report_id: str,
+    vault_key: bytes,
+    language: str = None,
+    allowed_member_id: str = "*",
+    on_new_translation_callback=None,
 ) -> dict | None:
     if language:
-        return translate_existing_vault_record(household_id, report_id, language, vault_key)
+        return translate_existing_vault_record(
+            household_id, report_id, language, vault_key, allowed_member_id, on_new_translation_callback
+        )
 
     db = SessionLocal()
     try:
@@ -480,6 +515,8 @@ def get_single_vault_record(
         )
         if not r:
             return None
+
+        _verify_record_member_scope(r, allowed_member_id)
 
         ai_data = decrypt_json_with_key(r.ai_analysis_enc, vault_key) or {}
         attached_rx = decrypt_json_with_key(r.attached_prescriptions_enc, vault_key) or []
@@ -500,7 +537,6 @@ def get_single_vault_record(
 
 
 def delete_vault_record(household_id: str, report_id: str) -> bool:
-    """Deletes the DB row AND deletes all encrypted image/PDF files from storage!"""
     db = SessionLocal()
     try:
         r = (
@@ -511,14 +547,10 @@ def delete_vault_record(household_id: str, report_id: str) -> bool:
         if not r:
             return False
 
-        for f_info in (r.filenames or []):
-            if isinstance(f_info, dict) and f_info.get("file_id"):
-                fpath = os.path.join(VAULT_FILES_DIR, os.path.basename(f_info["file_id"]))
-                if os.path.exists(fpath):
-                    try:
-                        os.remove(fpath)
-                    except OSError:
-                        pass
+        db.query(VaultFileBlob).filter(
+            VaultFileBlob.report_id == report_id,
+            VaultFileBlob.household_id == household_id,
+        ).delete()
 
         db.delete(r)
         db.commit()
@@ -569,22 +601,17 @@ def search_member_history_vectors(
         db.close()
 
 
-# =========================================================
-# 5. FAMILY VAULT ROLE MANAGEMENT (OWNER ASSIGNS ROLES)
-# =========================================================
-
 def create_family_role_code(household_id: str, vault_key: bytes, payload: dict) -> dict:
-    """Allows the Vault Owner to create an 'editor' or 'viewer' share code for family members."""
-    share_code = payload["share_code"].strip()
-    code_hash = hash_invite_code(share_code)
-    wrapped_key = wrap_vault_key_for_role_code(vault_key, share_code)
+    """
+    P0 #3 Fix: Server generates a high-entropy share code with secrets.token_urlsafe(16)
+    and returns it ONCE to the owner.
+    """
+    generated_code = secrets.token_urlsafe(16)
+    code_hash = hash_invite_code(generated_code)
+    wrapped_key = wrap_vault_key_for_role_code(vault_key, generated_code)
 
     db = SessionLocal()
     try:
-        existing = db.query(VaultAccessRole).filter(VaultAccessRole.code_hash == code_hash).first()
-        if existing:
-            raise ValueError("This share code is already in use. Please pick a unique code.")
-
         role_entry = VaultAccessRole(
             code_hash=code_hash,
             household_id=household_id,
@@ -596,6 +623,7 @@ def create_family_role_code(household_id: str, vault_key: bytes, payload: dict) 
         db.add(role_entry)
         db.commit()
         return {
+            "generated_share_code": generated_code,  # Shown once to Owner!
             "label": role_entry.label,
             "role": role_entry.role,
             "allowed_member_id": role_entry.allowed_member_id,

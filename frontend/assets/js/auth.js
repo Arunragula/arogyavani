@@ -13,7 +13,7 @@ function escapeHtml(unsafe) {
 
 function getSession() {
   try {
-    const raw = localStorage.getItem(AUTH_KEY);
+    const raw = sessionStorage.getItem(AUTH_KEY);
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
@@ -69,7 +69,7 @@ async function submitInviteCodeLogin(event) {
       throw new Error(data.detail || "Invalid Invite Code.");
     }
 
-    localStorage.setItem(
+    sessionStorage.setItem(
       AUTH_KEY,
       JSON.stringify({
         invite_code: code,
@@ -89,7 +89,7 @@ async function submitInviteCodeLogin(event) {
 }
 
 function logoutSession() {
-  localStorage.removeItem(AUTH_KEY);
+  sessionStorage.removeItem(AUTH_KEY);
   window.location.href = "/login";
 }
 

@@ -1,6 +1,6 @@
 # app/schemas/models.py
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 
 
 class SpeakRequest(BaseModel):
@@ -26,16 +26,36 @@ class FamilyMemberCreate(BaseModel):
 
 
 class RoleCodeCreate(BaseModel):
-    share_code: str = Field(
-        ...,
-        min_length=6,
-        max_length=64,
-        description="Secret code to give your family member (e.g., MOM-VIEW-2026)",
-    )
+    """P0 #3 Fix: Owner only chooses label, role, and member scope. Server generates the cryptographic code!"""
     label: str = Field(..., min_length=1, max_length=80, description="e.g., Mom's Phone (View Only)")
-    role: str = Field("viewer", pattern="^(editor|viewer)$", description="'editor' or 'viewer'")
-    allowed_member_id: str = Field(
-        "*",
-        max_length=40,
-        description="'*' for all family profiles, or a specific profile like 'mom'",
-    )
+    role: str = Field("viewer", pattern="^(editor|viewer)$")
+    allowed_member_id: str = Field("*", max_length=40)
+
+
+# LLM Output Validation Schemas
+class AttentionItemSchema(BaseModel):
+    item: str = ""
+    your_value: str = ""
+    healthy_normal_range: str = "Standard"
+    severity: str = "info"
+    simple_explanation: str = ""
+
+
+class NormalTestItemSchema(BaseModel):
+    term_on_report: str = ""
+    your_value: str = ""
+    healthy_normal_range: str = "Normal"
+    meaning_in_simple_words: str = ""
+
+
+class ValidatedReportOutput(BaseModel):
+    is_medical_related: bool = True
+    rejection_reason: str = ""
+    document_category: str = "lab_report"
+    report_type: str = "Medical Report"
+    overall_status: str = ""
+    attention_needed: List[AttentionItemSchema] = []
+    jargon_and_normal_tests_decoded: List[NormalTestItemSchema] = []
+    questions_for_doctor: List[str] = []
+    voice_summary_script: str = ""
+    disclaimer: str = ""
