@@ -1,44 +1,57 @@
+# app/services/scrubber.py
 import re
 
 
 def extract_anonymous_demographics(text: str) -> dict:
     """
-    Captures Age and Gender even on multi-column forms where the label ('Age', 'Gender')
-    is printed on the line above the value ('23', 'Male').
+    Scans up to the first 2,000 chars for Age and Gender while filtering out
+    any lines containing reference range keywords.
     """
-    # 1. Catch Gender anywhere in the header/text
-    gender_match = re.search(r"\b(Male|Female)\b", text, re.IGNORECASE)
-    if not gender_match:
-        gender_match = re.search(
-            r"(?:Sex|Gender)\s*[:\-/|]?\s*(M|F|Other)\b", text, re.IGNORECASE
-        )
+    header_lines = []
+    for line in text[:2000].splitlines():
+        if not re.search(
+            r"\b(reference|range|interval|biological|normal\s+val|desirable|borderline)\b",
+            line,
+            re.IGNORECASE,
+        ):
+            header_lines.append(line)
+    header_text = "\n".join(header_lines)
 
-    # 2. Catch Age (either "Age: 23" OR when "23" appears near "Age" or "BMI" or "Weight")
+    gender_match = re.search(
+        r"(?:Sex|Gender)\s*[:\-/|]?\s*\b(Male|Female|M|F|Other)\b",
+        header_text,
+        re.IGNORECASE,
+    )
+    if not gender_match:
+        gender_match = re.search(r"\b(Male|Female)\b", header_text, re.IGNORECASE)
+
     age_match = re.search(
-        r"(?:Age|Yrs|Years)\s*[:\-/|]?\s*(\d{1,3})\b", text, re.IGNORECASE
+        r"(?:Age|Yrs|Years)\s*[:\-/|]?\s*(\d{1,3})\b", header_text, re.IGNORECASE
     )
     if not age_match:
-        # Handle stacked forms where 'Age' is in the header and a 2-digit age (1-99) is nearby
-        header_slice = text[:800]
         stacked_age = re.search(
             r"\b(?:Unmarried|Married|Single)\b.*?\b([1-8]\d)\b",
-            header_slice,
+            header_text,
             re.IGNORECASE | re.DOTALL,
         )
         if stacked_age:
             age_match = stacked_age
 
-    age = f"{age_match.group(1).strip()} Years" if age_match else "Not specified"
-    gender = gender_match.group(1).capitalize() if gender_match else "Not specified"
+    raw_gender = gender_match.group(1).upper() if gender_match else ""
+    if raw_gender == "M":
+        gender = "Male"
+    elif raw_gender == "F":
+        gender = "Female"
+    elif raw_gender:
+        gender = raw_gender.capitalize()
+    else:
+        gender = "Not specified"
 
+    age = f"{age_match.group(1).strip()} Years" if age_match else "Not specified"
     return {"age": age, "gender": gender}
 
 
 def scrub_personal_details(raw_text: str) -> dict:
-    """
-    Removes PII/PHI including international phone/fax numbers, merged OCR names
-    (like Mr/Ms.MOHSINSHARIF or DR.AYISHACH), P.O. Boxes, Medical Centers, and IDs.
-    """
     demographics = extract_anonymous_demographics(raw_text)
     scrubbed = raw_text
     redaction_counts = {
@@ -49,81 +62,90 @@ def scrub_personal_details(raw_text: str) -> dict:
         "addresses_and_clinics": 0,
     }
 
-    # 1. Scrub Emails (including OCR typos like EmalID:info@...)
-    scrubbed, count = re.subn(
-        r"(?:E?-?mail\s*(?:ID)?\s*[:\-]?\s*)?\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,7}\b",
+    # 1. Emails
+    scrubbed, c = re.subn(
+        r"(?:E?-?mail[ \t]*(?:ID)?[ \t]*[:\-]?[ \t]*)?\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,7}\b",
         "[EMAIL_REDACTED]",
         scrubbed,
         flags=re.IGNORECASE,
     )
-    redaction_counts["emails"] += count
+    redaction_counts["emails"] += c
 
-    # 2. Scrub Labeled Phone / Fax / Mobile Numbers (even with NO spaces, e.g., Phone:96614885270 or Fax96614885266)
-    labeled_phone_pattern = (
-        r"(?i)(?:Phone|Ph|Tel|Telephone|Mobile|Mob|Cell|Fax|Contact(?:\s*No)?)"
-        r"\s*[:\-\.]?\s*\+?[0-9][0-9\s\-\(\)]{6,16}[0-9]"
-    )
-    scrubbed, count = re.subn(labeled_phone_pattern, "[PHONE_OR_FAX_REDACTED]", scrubbed)
-    redaction_counts["phone_and_fax"] += count
+    # 2. PAN Card & Aadhaar (Full or partial/masked XXXX-XXXX-1234)
+    scrubbed, c = re.subn(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", "[PAN_REDACTED]", scrubbed)
+    redaction_counts["medical_and_govt_ids"] += c
 
-    # 3. Scrub Standalone Phone Numbers (Indian 10-digit & International +966 / +971 / +91 formats)
-    standalone_phone_pattern = (
-        r"(?:\+\d{1,3}[\s\-]?)?\b(?:966|971|965|968|974|973)?[5-9]\d{8,9}\b"
-    )
-    scrubbed, count = re.subn(standalone_phone_pattern, "[PHONE_REDACTED]", scrubbed)
-    redaction_counts["phone_and_fax"] += count
-
-    # 4. Scrub Honorifics + Names (Handles "Mr/Ms.MOHSINSHARIF", "DR.AYISHACH", "Mr. Rahul", etc.)
-    honorific_pattern = (
-        r"(?:Mr\s*/?\s*Ms|Mr\.|Mrs\.|Ms\.|Miss|Master|Dr\.|DR\.|Smt\.|Shri)"
-        r"[\.\s]*([A-Z][A-Za-z\.\s]{2,35})(?=\s*\||\s*\n|$|\s+who\b)"
-    )
-    scrubbed, count = re.subn(honorific_pattern, "[NAME_REDACTED]", scrubbed)
-    redaction_counts["names_and_doctors"] += count
-
-    # 5. Scrub Certificate Phrases ("medical report for ...", "Doctor's name ...", "Signature ...")
-    phrase_name_pattern = (
-        r"(?i)(report\s*for\s*|Doctor'?s\s*name\s*\|?\s*|S[i]?gnature\s*\|?\s*)"
-        r"([A-Za-z0-9\./\s]{3,35})(?=\s*\||\s*\n|$)"
-    )
-    scrubbed, count = re.subn(phrase_name_pattern, r"\1[NAME_REDACTED]", scrubbed)
-    redaction_counts["names_and_doctors"] += count
-
-    # 6. Scrub Labeled Patient / Doctor / Candidate Names
-    labeled_name_pattern = (
-        r"(?i)\b(Patient\s*Name|Pt\.?\s*Name|Candidate\s*Name|Customer\s*Name|"
-        r"Ref(?:erred)?\s*By|Consultant)\s*[:\-\.]+\s*([^\n\|]+)"
-    )
-    scrubbed, count = re.subn(labeled_name_pattern, r"\1: [NAME_REDACTED]", scrubbed)
-    redaction_counts["names_and_doctors"] += count
-
-    # 7. Scrub Medical, Passport, GCC & Govt IDs (e.g., GHC Code, GCC Slip, Passport No, QW9143, UHID)
-    id_pattern = (
-        r"(?i)\b(G\.?H\.?C\.?\s*Code(?:\s*No\.?)?|GCC\s*Slip(?:\s*No\.?)?|Passport\s*No\.?|"
-        r"UHID|Patient\s*ID|Lab\s*ID|Sample\s*ID|Reg(?:istration)?\.?\s*No|"
-        r"Barcode(?:\s*No)?|MRN|ABHA(?:\s*ID)?|Aadhaar)\s*(?:\|\s*)?[:\-\.]?\s*([0-9A-Za-z\-\/:]{4,25})"
-    )
-    scrubbed, count = re.subn(id_pattern, r"\1: [ID_REDACTED]", scrubbed)
-    redaction_counts["medical_and_govt_ids"] += count
-
-    # Also scrub standalone GCC/Lab tracking codes like QW9143 or 02/04/02
-    scrubbed, count = re.subn(
-        r"\b[A-Z]{2}\d{4,8}\b|\b\d{2}[:/]\d{2}[:/]\d{2}\b",
-        "[CODE_REDACTED]",
+    scrubbed, c = re.subn(
+        r"(?i)\b(?:Aadhaar[ \t]*(?:No|Number)?[ \t]*[:\-]?[ \t]*[0-9Xx\*\- ]{4,16}|\d{4}[ \t\-]\d{4}[ \t\-]\d{4}|[Xx\*]{4}[ \t\-]?[Xx\*]{4}[ \t\-]?\d{4})\b",
+        "[AADHAAR_REDACTED]",
         scrubbed,
     )
-    redaction_counts["medical_and_govt_ids"] += count
+    redaction_counts["medical_and_govt_ids"] += c
 
-    # 8. Scrub P.O. Box, Addresses & Medical Center Names
-    address_clinic_pattern = (
-        r"(?i)(P\.?O\.?\s*Box[^\n\|]+|"
-        r"\b[A-Za-z\s]{3,25}(?:Medical\s*Cent(?:re|er)|Hospital|Diagnostics|Clinic|Labs?)\b|"
-        r"(?:Address|Location)\s*[:\-\.]+\s*([^\n\|]+))"
+    # 3. Date of Birth (Handles slashes, hyphens, AND spaces like "DOB 14 Mar 1985" or "DOB: 14 March 1985")
+    scrubbed, c = re.subn(
+        r"(?i)\b(D\.?O\.?B\.?|Date[ \t]*of[ \t]*Birth)[ \t]*[:\-\|]?[ \t]*\d{1,2}[ \t\-/\.]+[A-Za-z0-9]{2,9}[ \t\-/\.]+\d{2,4}",
+        r"\1: [DOB_REDACTED]",
+        scrubbed,
     )
-    scrubbed, count = re.subn(
-        address_clinic_pattern, "[CLINIC_OR_ADDRESS_REDACTED]", scrubbed
+    redaction_counts["medical_and_govt_ids"] += c
+
+    # 4. Labeled & Spaced Phone / Fax Numbers
+    labeled_phone = (
+        r"(?i)(?:Phone|Ph|Tel|Telephone|Mobile|Mob|Cell|Fax|Contact(?:[ \t]*No)?)"
+        r"[ \t]*[:\-\.]?[ \t]*\+?[0-9][0-9 \t\-\(\)]{6,16}[0-9]"
     )
-    redaction_counts["addresses_and_clinics"] += count
+    scrubbed, c = re.subn(labeled_phone, "[PHONE_REDACTED]", scrubbed)
+    redaction_counts["phone_and_fax"] += c
+
+    spaced_phone = r"(?:\+?\d{1,3}[ \t\-]?)?\b[6-9]\d{4}[ \t\-]?\d{5}\b|\b(?:966|971|965)[ \t]*\d[\d \t]{7,9}\b"
+    scrubbed, c = re.subn(spaced_phone, "[PHONE_REDACTED]", scrubbed)
+    redaction_counts["phone_and_fax"] += c
+
+    # 5. Labeled Names (Includes standalone "Patient:", "Name:", "Father's Name:", "S/O", etc.)
+    labeled_name = (
+        r"(?i)\b(Patient(?:[ \t]*Name)?|Pt\.?[ \t]*Name|Candidate[ \t]*Name|Customer[ \t]*Name|"
+        r"Father'?s[ \t]*Name|Husband'?s[ \t]*Name|Mother'?s[ \t]*Name|S/O|D/O|W/O|C/O|"
+        r"Ref(?:erred)?[ \t]*By|Ref\.?[ \t]*Doctor|Consultant|Doctor'?s[ \t]*name|S[i]?gnature|Name)"
+        r"[ \t]*[:\-\.]+[ \t]*([^\n\|]{2,40})"
+    )
+    scrubbed, c = re.subn(labeled_name, r"\1: [NAME_REDACTED]", scrubbed)
+    redaction_counts["names_and_doctors"] += c
+
+    # 6. Honorifics + Names (Single-line horizontal whitespace [ \t] only!)
+    honorifics = (
+        r"(?:Mr[ \t]*/?[ \t]*Ms|Mr\.|Mrs\.|Ms\.|Miss|Master|Dr\.|DR\.|Smt\.|Shri|Kumari)"
+        r"[\. \t]*([A-Z][A-Za-z\. \t]{2,35})(?=[ \t]*\||[ \t]*\n|$|[ \t]+who\b)"
+    )
+    scrubbed, c = re.subn(honorifics, "[NAME_REDACTED]", scrubbed)
+    redaction_counts["names_and_doctors"] += c
+
+    # 7. Medical, Passport, GCC & Lab IDs
+    id_pattern = (
+        r"(?i)\b(G\.?H\.?C\.?[ \t]*Code(?:[ \t]*No\.?)?|GCC[ \t]*Slip(?:[ \t]*No\.?)?|Passport[ \t]*No\.?|"
+        r"UHID|Patient[ \t]*ID|Lab[ \t]*ID|Sample[ \t]*ID|Reg(?:istration)?\.?[ \t]*No|"
+        r"Barcode(?:[ \t]*No)?|MRN|ABHA(?:[ \t]*ID)?)[ \t]*(?:\|[ \t]*)?[:\-\.]?[ \t]*([0-9A-Za-z\-\/]{4,25})"
+    )
+    scrubbed, c = re.subn(id_pattern, r"\1: [ID_REDACTED]", scrubbed)
+    redaction_counts["medical_and_govt_ids"] += c
+
+    # 8. P.O. Box & Labeled Addresses (Horizontal spaces only!)
+    labeled_addr = r"(?i)(?:P\.?O\.?[ \t]*Box[^\n\|]+|\b(?:Address|Location|Collection[ \t]*Center)[ \t]*[:\-\.]+[ \t]*[^\n\|]+)"
+    scrubbed, c = re.subn(labeled_addr, "[ADDRESS_OR_CLINIC_REDACTED]", scrubbed)
+    redaction_counts["addresses_and_clinics"] += c
+
+    # 9. Clinic / Diagnostic Names (Case-sensitive start [A-Z], horizontal spaces [ \t] ONLY so "mg/dL\nSri Sai..." NEVER matches "dL"!)
+    clinic_pattern = (
+        r"\b[A-Z][A-Za-z0-9&' \t]{1,30}[ \t]+"
+        r"(?:Medical[ \t]+Cent(?:re|er)|Hospital|Diagnostics(?:[ \t]+Cent(?:re|er)|[ \t]+Lab)?|PathLabs|Pathology[ \t]+Lab|Polyclinic|Health[ \t]+Centre)\b"
+    )
+    scrubbed, c = re.subn(clinic_pattern, "[ADDRESS_OR_CLINIC_REDACTED]", scrubbed)
+    redaction_counts["addresses_and_clinics"] += c
+
+    # 10. Pincodes (ONLY when labeled as Pin/Pincode OR preceded by "City/Address - 560001", NEVER matching "TSH 560012" or "250000"!)
+    pincode_pattern = r"(?i)(?:\b(?:Pin(?:[ \t]*Code)?|Postal[ \t]*Code)[ \t]*[:\-]?[ \t]*[1-9]\d{2}[ \t]?\d{3}\b|(?<=[A-Za-z][ \t]\-[ \t])[1-9]\d{5}\b)"
+    scrubbed, c = re.subn(pincode_pattern, "[PINCODE_REDACTED]", scrubbed)
+    redaction_counts["addresses_and_clinics"] += c
 
     header = (
         f"--- ANONYMIZED PATIENT CONTEXT ---\n"

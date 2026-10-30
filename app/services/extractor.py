@@ -3,9 +3,44 @@ import io
 import pymupdf  # PyMuPDF
 import pymupdf4llm
 from PIL import Image
+from fastapi import HTTPException
 from rapidocr_onnxruntime import RapidOCR
 
 ocr_engine = RapidOCR()
+
+MAX_FILES_PER_REQUEST = 5
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB per file
+MAX_PDF_PAGES = 5                       # Protects 512 MB RAM on Render
+
+
+def verify_file_safety_and_magic_bytes(filename: str, file_bytes: bytes) -> str:
+    """
+    Validates file size (<= 10 MB) and inspects actual file magic bytes
+    so malicious files renamed as .jpg or .pdf are rejected with HTTP 400.
+    """
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail=f"File '{filename}' is empty.")
+
+    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File '{filename}' exceeds the 10 MB size limit.",
+        )
+
+    header = file_bytes[:12]
+    if header.startswith(b"%PDF-"):
+        return "pdf"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "webp"
+
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported or corrupted file '{filename}'. Please upload a genuine PDF, JPG, PNG, or WEBP file.",
+    )
 
 
 def reconstruct_table_rows(ocr_results) -> str:
@@ -53,19 +88,33 @@ def reconstruct_table_rows(ocr_results) -> str:
 
 def extract_from_image_bytes(image_bytes: bytes) -> str:
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    # Cap OCR resolution to 1800px so 12MP phone photos don't spike RAM on Render
+    if max(img.size) > 1800:
+        scale = 1800 / float(max(img.size))
+        img = img.resize((int(img.size[0] * scale), int(img.size[1] * scale)), Image.Resampling.LANCZOS)
+
     img_byte_arr = io.BytesIO()
-    img.save(img_byte_arr, format="JPEG", quality=95)
+    img.save(img_byte_arr, format="JPEG", quality=90)
     ocr_result, _ = ocr_engine(img_byte_arr.getvalue())
     return reconstruct_table_rows(ocr_result)
 
 
 def extract_document_text(file_bytes: bytes, filename: str) -> dict:
-    ext = filename.lower().split(".")[-1]
+    detected_type = verify_file_safety_and_magic_bytes(filename, file_bytes)
 
-    if ext == "pdf":
-        doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+    if detected_type == "pdf":
+        try:
+            doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Could not open PDF '{filename}'.")
+
+        if len(doc) > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF '{filename}' has {len(doc)} pages. Maximum {MAX_PDF_PAGES} pages allowed per PDF.",
+            )
+
         md_text = pymupdf4llm.to_markdown(doc)
-
         if len(md_text.strip()) > 50:
             return {
                 "extraction_method": "digital_pdf_markdown",
@@ -76,7 +125,7 @@ def extract_document_text(file_bytes: bytes, filename: str) -> dict:
         scanned_pages_text = []
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=200)
+            pix = page.get_pixmap(dpi=160)
             page_img_bytes = pix.tobytes("jpeg")
             page_text = extract_from_image_bytes(page_img_bytes)
             scanned_pages_text.append(f"--- Page {page_num + 1} ---\n{page_text}")
@@ -87,37 +136,37 @@ def extract_document_text(file_bytes: bytes, filename: str) -> dict:
             "raw_text": "\n\n".join(scanned_pages_text),
         }
 
-    elif ext in ["jpg", "jpeg", "png", "webp"]:
+    else:
         text = extract_from_image_bytes(file_bytes)
         return {
             "extraction_method": "image_ocr",
             "page_count": 1,
             "raw_text": text,
         }
-    else:
-        raise ValueError(f"Unsupported file format in '{filename}'. Upload PDF, JPG, PNG, or WEBP.")
 
 
 def extract_multiple_documents(files_data: list) -> dict:
-    """
-    Processes 1 to 10 uploaded images or PDFs and merges them into one combined report.
-    files_data is a list of tuples: [(filename, file_bytes), ...]
-    """
+    if len(files_data) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_FILES_PER_REQUEST} files allowed per request.",
+        )
+
     combined_sections = []
     total_pages = 0
-    methods_used = []
 
     for idx, (filename, file_bytes) in enumerate(files_data, start=1):
         res = extract_document_text(file_bytes, filename)
         total_pages += res["page_count"]
-        methods_used.append(res["extraction_method"])
-        combined_sections.append(
-            f"=== UPLOADED FILE {idx}: {filename} ===\n{res['raw_text']}"
-        )
+        if total_pages > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Total pages across uploaded files cannot exceed {MAX_PDF_PAGES}.",
+            )
+        combined_sections.append(f"=== DOCUMENT {idx} ===\n{res['raw_text']}")
 
     return {
         "files_processed": len(files_data),
         "total_pages": total_pages,
-        "extraction_methods": list(set(methods_used)),
         "combined_raw_text": "\n\n".join(combined_sections),
     }

@@ -1,28 +1,28 @@
 # app/services/voice_tts.py
-import os
-import uuid
+import hashlib
+from collections import OrderedDict
 import edge_tts
 
-AUDIO_DIR = "generated_audio"
-os.makedirs(AUDIO_DIR, exist_ok=True)
+# Small in-memory LRU cache (max 25 audio clips) so re-clicking a card is instant with 0 disk usage
+MEMORY_AUDIO_CACHE: OrderedDict[str, bytes] = OrderedDict()
+MAX_CACHE_ITEMS = 25
 
-# Warm, natural Neural Voices for India, Middle East & Europe
 LANGUAGE_VOICE_MAP = {
-    "english": "en-IN-NeerjaNeural",      # Warm Indian-English female voice
-    "hinglish": "hi-IN-SwaraNeural",      # Natural Hindi/Hinglish voice
-    "hindi": "hi-IN-SwaraNeural",         # Natural Hindi female voice
-    "telugu": "te-IN-ShrutiNeural",       # Natural Telugu female voice
-    "tamil": "ta-IN-PallaviNeural",       # Natural Tamil female voice
-    "kannada": "kn-IN-SapnaNeural",       # Natural Kannada female voice
-    "malayalam": "ml-IN-SobhanaNeural",   # Natural Malayalam female voice
-    "bengali": "bn-IN-TanishaaNeural",    # Natural Bengali female voice
-    "marathi": "mr-IN-AarohiNeural",      # Natural Marathi female voice
-    "gujarati": "gu-IN-DhwaniNeural",     # Natural Gujarati female voice
-    "urdu": "ur-PK-UzmaNeural",           # Natural Urdu female voice
-    "arabic": "ar-SA-ZariyahNeural",      # Natural Arabic female voice
-    "spanish": "es-ES-ElviraNeural",      # Natural Spanish female voice
-    "french": "fr-FR-DeniseNeural",       # Natural French female voice
-    "german": "de-DE-KatjaNeural",        # Natural German female voice
+    "english": "en-IN-NeerjaNeural",
+    "hinglish": "hi-IN-SwaraNeural",
+    "hindi": "hi-IN-SwaraNeural",
+    "telugu": "te-IN-ShrutiNeural",
+    "tamil": "ta-IN-PallaviNeural",
+    "kannada": "kn-IN-SapnaNeural",
+    "malayalam": "ml-IN-SobhanaNeural",
+    "bengali": "bn-IN-TanishaaNeural",
+    "marathi": "mr-IN-AarohiNeural",
+    "gujarati": "gu-IN-DhwaniNeural",
+    "urdu": "ur-PK-UzmaNeural",
+    "arabic": "ar-SA-ZariyahNeural",
+    "spanish": "es-ES-ElviraNeural",
+    "french": "fr-FR-DeniseNeural",
+    "german": "de-DE-KatjaNeural",
 }
 
 
@@ -31,23 +31,30 @@ def get_voice_for_language(language: str) -> str:
     for key, voice in LANGUAGE_VOICE_MAP.items():
         if key in lang_key:
             return voice
-    return "en-IN-NeerjaNeural"  # Default warm voice
+    return "en-IN-NeerjaNeural"
 
 
-async def generate_voice_mp3(script_text: str, language: str = "English") -> dict:
+async def stream_voice_mp3_bytes(script_text: str, language: str = "English") -> bytes:
     """
-    Converts the AI doctor's spoken summary script into an MP3 file for $0 using edge-tts.
+    Streams TTS audio bytes directly into RAM without writing any files to disk!
+    Protects ephemeral cloud servers (like Render) and keeps audio private.
     """
     voice_name = get_voice_for_language(language)
-    filename = f"summary_{uuid.uuid4().hex[:8]}.mp3"
-    filepath = os.path.join(AUDIO_DIR, filename)
+    cache_key = hashlib.md5(f"{voice_name}:{script_text}".encode("utf-8")).hexdigest()
 
-    # Slightly slower rate (-5%) makes medical explanations clearer for elders
+    if cache_key in MEMORY_AUDIO_CACHE:
+        MEMORY_AUDIO_CACHE.move_to_end(cache_key)
+        return MEMORY_AUDIO_CACHE[cache_key]
+
     communicate = edge_tts.Communicate(text=script_text, voice=voice_name, rate="-5%")
-    await communicate.save(filepath)
+    audio_chunks = bytearray()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            audio_chunks.extend(chunk["data"])
 
-    return {
-        "audio_filename": filename,
-        "filepath": filepath,
-        "voice_used": voice_name,
-    }
+    audio_bytes = bytes(audio_chunks)
+    MEMORY_AUDIO_CACHE[cache_key] = audio_bytes
+    if len(MEMORY_AUDIO_CACHE) > MAX_CACHE_ITEMS:
+        MEMORY_AUDIO_CACHE.popitem(last=False)
+
+    return audio_bytes

@@ -18,8 +18,9 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-from app.db.database import DATABASE_URL, Base
+from app.db.database import DATABASE_URL, Base,init_pgvector_extension
 from app.db import models  # Imports MedicalReport and QATrainingLog
+init_pgvector_extension()
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 target_metadata = Base.metadata
 

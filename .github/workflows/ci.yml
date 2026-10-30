@@ -1,0 +1,38 @@
+# .github/workflows/ci.yml
+name: ArogyaVani Production CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-verify:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: sqlite:///./test_ci_vault.db
+      INVITE_CODES: TEST-OWNER-LONG-CODE-2026,SECOND-HOUSEHOLD-LONG-CODE
+      SECRET_SALT: ci-test-production-salt-2026-secure
+      GEMINI_API_KEY: dummy-ci-key-for-offline-tests
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python >=3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Dependencies
+        run: |
+          
+          uv sync --frozen --extra dev
+
+      - name: Run Unit & Integration Tests
+        run: uv run --no-sync python -m pytest -v

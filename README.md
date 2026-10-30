@@ -1,272 +1,414 @@
-# CuraVault AI
+# ArogyaVani / CuraVault AI
 
-CuraVault AI is a health-literacy web application for reviewing medical reports
-and prescriptions. It extracts text from uploaded PDFs and images, removes
-selected personal details locally, and asks a Gemini model to explain the
-medical content in the selected language. It also provides family profiles,
-saved report history, health questions, and speech playback.
+ArogyaVani / CuraVault AI is a health-literacy web application for understanding
+medical reports and prescriptions. It extracts document text, removes selected
+personal identifiers locally, and uses Gemini to explain the remaining medical
+content. Users can organize saved reports into family profiles, link
+prescriptions to reports, ask health questions, and listen to text-to-speech
+responses.
 
-> **Medical notice:** This project provides informational explanations, not
-> diagnoses or treatment recommendations. AI output and OCR may be inaccurate
-> or incomplete. Always confirm medical decisions with a qualified healthcare
-> professional. For urgent symptoms, seek appropriate medical care.
+> **Educational use only:** This application does not diagnose conditions or
+> prescribe treatment. OCR, AI explanations, and extracted values can be wrong
+> or incomplete. Verify results with a qualified healthcare professional. Do
+> not use the application for emergencies.
 
-## Features
+## What the app does
 
-- Upload up to 10 medical files at a time: PDF, JPG, JPEG, PNG, or WEBP.
-- Extract selectable PDF text and use OCR for scanned PDFs and images.
-- Analyze laboratory/medical reports and prescriptions using Gemini.
-- Request explanations in a selected language and translate saved reports.
-- Create family member profiles and browse their report timelines.
-- Ask health questions with optional context from the selected member's saved
-  reports.
-- Generate spoken summaries using Edge TTS.
-- Store report metadata in SQLite by default, with PostgreSQL support in the
-  SQLAlchemy models.
-- Avoid repeat analysis for the same member, document category, and file
-  contents by caching a document hash.
+- Accepts up to 5 files per analysis request, each up to 10 MB. The total page
+  count across the request is limited to 5 (each image counts as one page).
+- Supports PDF, JPG/JPEG, PNG, and WEBP files. PDF text is extracted directly
+  when available; scanned PDFs and images use OCR.
+- Analyzes lab reports and prescriptions in a selected language.
+- Lets users choose whether to save the analyzed result to the encrypted family
+  vault. Unchecking the save option returns an analysis without adding a report
+  to the vault.
+- Supports household invite codes and owner/editor/viewer family access roles.
+- Allows saved lab reports to have one or more prescriptions attached.
+- Provides report timelines, translations, optional past-report context for
+  health questions, and streamed speech playback.
 
 ## Technology
 
-- Python 3.13 or newer
+- Python 3.13 or newer (as specified by `pyproject.toml`)
 - FastAPI and Uvicorn
 - SQLAlchemy and Alembic
-- SQLite by default; PostgreSQL and `pgvector` are supported by the model setup
-- PyMuPDF, PyMuPDF4LLM, Pillow, and RapidOCR for PDF/text/image extraction
-- Google Gemini API for report explanations, translation, Q&A, and embeddings
-- Edge TTS for speech generation
-- Static HTML, CSS, and JavaScript frontend served by FastAPI
+- SQLite or PostgreSQL; PostgreSQL uses `pgvector`
+- PyMuPDF, PyMuPDF4LLM, Pillow, and RapidOCR for extraction
+- Google Gemini API for analysis, translations, Q&A, and embeddings
+- Edge TTS for streamed speech
+- Static HTML, CSS, and JavaScript served by FastAPI
 
 ## Project layout
 
 ```text
 .
 ├── app/
-│   ├── main.py                 # FastAPI pages and API routes
+│   ├── main.py                    # Web pages and authenticated API routes
 │   ├── db/
-│   │   ├── database.py         # Database URL, engine, and SQLAlchemy base
-│   │   └── models.py          # Family, report, and Q&A database models
-│   ├── schemas/models.py       # Pydantic request/response data models
+│   │   ├── database.py            # Database URL, engine, SQLAlchemy base
+│   │   └── models.py              # Vault roles, family, reports, quota models
+│   ├── schemas/models.py          # Validated API request models
 │   └── services/
-│       ├── analyzer.py         # Gemini report analysis, translation, and Q&A
-│       ├── db_vector.py        # Persistence, vault files, cache, history
-│       ├── embeddings.py       # Report-history embeddings
-│       ├── extractor.py        # PDF/image extraction and OCR
-│       ├── guardrails.py       # Local document and question checks
-│       ├── llm_router.py       # Gemini model fallback chain
-│       ├── prescription.py     # Prescription explanation prompt
-│       ├── scrubber.py         # Local PII scrubbing and demographics
-│       └── voice_tts.py        # Speech generation and language voices
-├── alembic/                    # Alembic environment and revision template
+│       ├── analyzer.py            # Gemini analysis, translation, and Q&A
+│       ├── auth_limiter.py        # Invite-code auth, roles, and quotas
+│       ├── crypto_vault.py        # Vault key derivation and encryption helpers
+│       ├── db_vector.py           # Encrypted report/file persistence and search
+│       ├── embeddings.py          # Report-history embeddings
+│       ├── extractor.py           # File validation, PDF extraction, and OCR
+│       ├── guardrails.py          # Local document and question checks
+│       ├── llm_router.py          # Gemini model fallback chain
+│       ├── prescription.py        # Prescription analysis
+│       ├── scrubber.py             # Personal-identifier scrubbing
+│       └── voice_tts.py           # In-memory streamed speech and cache
+├── alembic/
+│   └── versions/                  # Database migration revisions
 ├── frontend/
-│   ├── assets/                 # CSS, JavaScript, and logo
-│   ├── index.html              # Landing page
-│   ├── login.html              # Local profile/guest selection
-│   └── dashboard.html          # Scanner, vault, and Q&A UI
-├── vault_uploads/              # Original uploaded report files
-├── generated_audio/            # Generated MP3 files
+│   ├── assets/                    # CSS, JavaScript, and logo
+│   ├── index.html                 # Landing page
+│   ├── login.html                 # Household invite-code login
+│   └── dashboard.html             # Scanner, family vault, and Q&A
+├── tests/                         # Unit and API integration tests
+├── vault_uploads/                 # Encrypted saved document files
 ├── alembic.ini
-├── main.py                     # Minimal placeholder module
 ├── pyproject.toml
 └── uv.lock
 ```
 
-The application entry point is `app.main:app`. The root `main.py` is a small
-placeholder and is not the FastAPI server entry point.
+Run the FastAPI application as `app.main:app`. The root `main.py` is not the
+server entry point.
 
-## Requirements and local setup
+## Setup and run locally
 
-Install Python 3.13+ and [uv](https://docs.astral.sh/uv/). In PowerShell, from
-the project directory:
+### 1. Install prerequisites
+
+Install Python 3.13+ and [uv](https://docs.astral.sh/uv/). Open PowerShell in
+the project directory and install the locked dependencies:
 
 ```powershell
 uv sync
 ```
 
-Create a `.env` file in the project directory (or configure these variables in
-your process environment):
+### 2. Configure environment variables
+
+Create a `.env` file in the project directory. Do not copy real credentials
+into source control or share them in issues, logs, or screenshots.
 
 ```dotenv
-# Optional. Defaults to SQLite in the project directory.
+# Required. For local development, this creates/uses a SQLite database file.
 DATABASE_URL=sqlite:///./health_vault.db
 
-# Required for Gemini report analysis, translations, and health Q&A.
-GEMINI_API_KEY=replace-with-your-key
+# Required for Gemini analysis, translation, Q&A, and API-based embeddings.
+GEMINI_API_KEY=replace-with-your-Gemini-key
 
-# Optional. Comma-separated Gemini model names tried in order on errors.
-# If omitted, the application uses its built-in model chain.
+# Required for household access. Each comma-separated owner code initializes
+# an independent household vault the first time it is used.
+INVITE_CODES=replace-with-a-long-random-owner-code
+
+# Required for production. Generate a long random value and keep it stable.
+SECRET_SALT=replace-with-a-long-random-secret-salt
+
+# Optional. Comma-separated Gemini model names tried in order.
 GEMINI_MODEL_CHAIN=gemini-2.5-flash,gemini-2.5-flash-lite
+
+# Optional. Comma-separated browser origins permitted to call the API.
+ALLOWED_ORIGINS=http://127.0.0.1:8000,http://localhost:8000
 ```
 
-Do not commit `.env`, API keys, real patient data, database files, uploaded
-reports, or generated audio. `.gitignore` excludes these local files.
+Generate random values locally if needed:
 
-Start the development server from the project directory:
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Run that command separately for each secret; copy its output into your private
+environment configuration. Use strong, unique invite codes. Do not use
+development/default values in a deployment.
+
+**Keep `SECRET_SALT` unchanged after creating vaults.** It is used in invite
+code hashing and key derivation. Changing it can prevent users from unlocking
+existing vaults. Keep invite codes available to their owners; the server does
+not store the raw code. Back up `SECRET_SALT`, database data, and encrypted
+files securely and together.
+
+The `.env`, databases, and `vault_uploads/` are excluded from Git. Do not commit
+medical information, keys, or backups.
+
+### 3. Create or update the database
+
+For a fresh database, run the Alembic migration before starting the server:
+
+```powershell
+uv run alembic upgrade head
+uv run alembic current
+```
+
+The current revision creates the production tables for household roles,
+members, reports, and quota tracking. The application also calls
+`Base.metadata.create_all()` at startup; that creates missing tables, but it
+does not replace migrations for changing existing tables.
+
+If upgrading a database created by an older version of the app, make a verified
+backup first. Its schema and stored data may not match the current encrypted
+schema. Do not blindly apply the new initial migration to a non-empty legacy
+database: compare the live schema with the revision and plan a data-preserving
+migration or baseline before upgrading.
+
+For later model changes, create a revision, inspect it, and then apply it:
+
+```powershell
+uv run alembic revision --autogenerate -m "describe the schema change"
+# Review upgrade() and downgrade() in alembic/versions before continuing.
+uv run alembic upgrade head
+uv run alembic current
+```
+
+Autogeneration cannot determine intent for operations such as column renames.
+Edit and test generated revisions rather than treating them as automatically
+correct.
+
+### 4. Start and open the application
+
+Run from the project directory because the app uses relative paths:
 
 ```powershell
 uv run uvicorn app.main:app --reload
 ```
 
-Open <http://127.0.0.1:8000>. Interactive API documentation is available at
-<http://127.0.0.1:8000/docs>; the OpenAPI schema is at
-<http://127.0.0.1:8000/openapi.json>.
+- Web app: <http://127.0.0.1:8000>
+- API reference: <http://127.0.0.1:8000/docs>
+- OpenAPI JSON: <http://127.0.0.1:8000/openapi.json>
+- Health check: <http://127.0.0.1:8000/healthz>
 
-The app uses relative paths for the frontend and local output directories, so
-run Uvicorn with the project directory as the working directory.
-
-### Database configuration
-
-The default database is `sqlite:///./health_vault.db`. For PostgreSQL, set
-`DATABASE_URL` to a SQLAlchemy-compatible PostgreSQL URL, for example:
-
-```dotenv
-DATABASE_URL=postgresql://user:password@localhost:5432/curavault
-```
-
-PostgreSQL mode enables the `vector` extension and stores report embeddings as
-768-dimensional `pgvector` values. SQLite stores embeddings as JSON. The current
-history search calculates a dot-product score over the saved report embeddings
-and returns the top three reports for the selected member.
-
-### Alembic migrations
-
-Alembic is configured in `alembic.ini` and `alembic/env.py`. The environment
-loads SQLAlchemy metadata from `app.db.models`. At the time this documentation
-was written, the `alembic/` directory had no revision files. The application
-also calls `Base.metadata.create_all()` and runs a SQLite-specific schema
-adjustment when its database service is imported; this is not a replacement for
-a reviewed migration history.
-
-After establishing a correct baseline revision for your database, create and
-apply future migrations from the project directory:
+### 5. Run tests
 
 ```powershell
-New-Item -ItemType Directory -Force .\alembic\versions
-uv run alembic revision --autogenerate -m "describe the schema change"
-# Review the generated file under alembic/versions before applying it.
-uv run alembic upgrade head
-uv run alembic current
+uv run pytest -v
 ```
 
-Autogeneration cannot reliably infer every intent (for example, whether a
-column was renamed or dropped). Back up the database and review each revision's
-`upgrade()` and `downgrade()` functions. For a database that already contains
-tables but has no Alembic history, define and validate a baseline strategy
-before applying later migrations; do not blindly stamp or apply a generated
-revision to a database with valuable data.
+## Configuration and database notes
 
-## Application workflow
+`DATABASE_URL` is required; the application does not choose a default if it is
+missing. SQLite is suitable for local development:
 
-1. The browser sends the selected files to the report or prescription endpoint.
-2. The server enforces the 10-file limit and checks for a cached matching
-   document hash.
-3. PDF text is extracted directly when available; scanned PDFs and images are
-   processed with OCR.
-4. Local checks reject documents with insufficient or obviously non-medical
-   text. The scrubber removes selected personal details and preserves
-   demographics for analysis.
-5. The cleaned text is sent to Gemini. A configured model chain is tried in
-   order if a model call fails.
-6. The result is checked, then report data and original uploaded files are
-   saved in the database and `vault_uploads/`.
-7. Q&A may retrieve up to three saved reports for the selected family member.
-   The answer is stored in the Q&A log.
-8. Speech requests generate MP3 files under `generated_audio/`.
+```dotenv
+DATABASE_URL=sqlite:///./health_vault.db
+```
 
-The language selection applies to supported analysis/translation and speech
-flows. Speech voices are mapped for English, Hindi/Hinglish, Telugu, Tamil,
-Kannada, Malayalam, Bengali, Marathi, Gujarati, Urdu, Arabic, Spanish, French,
-and German; unrecognized languages use the English voice.
+For PostgreSQL, use a SQLAlchemy-compatible URL and make sure the server has
+the PostgreSQL driver and the `vector` extension available:
+
+```dotenv
+DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/curavault
+```
+
+PostgreSQL stores embeddings as 768-dimensional vectors; SQLite stores them as
+JSON. Set `ALLOWED_ORIGINS` to the exact trusted origins for the deployment.
+The defaults are intended for local development.
+
+## User workflow
+
+### A. Unlock a household vault
+
+1. Open `/login`.
+2. Enter a household owner invite code or a family role code.
+3. Accept the beta/educational-use notice and choose **Unlock Family Vault**.
+4. The browser sends the code to `/api/v1/auth/me`. On success, the browser
+   keeps the code in `localStorage` and includes it as the `X-Invite-Code`
+   header on API calls.
+5. Select **Lock Vault** to clear the browser's saved code and return to login.
+
+The first use of an owner code initializes that household's owner record.
+Owners can create editor or viewer codes from the dashboard's role-management
+control, optionally restricting a code to one family profile. Share role codes
+only with their intended users.
+
+### B. Analyze a report or prescription
+
+1. In the dashboard, choose a family profile. Add a profile if needed.
+2. Select **Lab Report** or **Prescription**.
+3. Select up to 5 supported files (10 MB each; no more than 5 PDF pages total).
+4. Accept **Privacy & Educational Consent**. This consent is required to submit
+   the analysis.
+5. Choose whether **Zero-Knowledge Vault Storage** is checked:
+   - Checked: after analysis, save encrypted report data and original files in
+     the Family Vault.
+   - Unchecked: return the result for this request without saving it to the
+     vault. It will not have a saved report ID or appear in the timeline.
+6. Select a language and choose **Decode Document**.
+7. Review the result. Check all values and recommendations with a healthcare
+   professional.
+
+Behind the scenes, the server validates file size/type, extracts PDF text or
+uses OCR, runs local medical-document checks, and scrubs selected identifiers.
+The cleaned text is sent to Gemini for analysis. When vault saving is enabled,
+the app encrypts report JSON and uploaded file bytes before persistent storage.
+Images are resized/compressed before being encrypted; PDFs remain PDFs.
+
+The app checks for an existing report with the same household, profile,
+document category, and file contents to avoid repeating analysis. Analysis
+requests are limited to 20 per IP per minute and 10 report/prescription
+operations per household in a rolling 24-hour period.
+
+### C. Attach a prescription to a saved report
+
+1. Save a lab report to the vault first.
+2. Open that saved report from its family member's timeline.
+3. Choose **Attach Prescription / Medicine Strip**.
+4. Upload the prescription files. The app extracts and analyzes them with
+   context from the parent lab report, then adds the encrypted prescription
+   files and decoded medicine guide under that report.
+
+This feature requires a saved parent report and a role that can write to that
+profile. A viewer cannot attach prescriptions.
+
+### D. Use the Family Vault
+
+- Family profiles group reports inside a household.
+- Open a profile to view its timeline, open a report, translate it, or inspect
+  its saved original files.
+- Original files are decrypted only for an authenticated request and streamed
+  to the browser. They are not served from a public static-file route.
+- Only the owner can delete reports or manage/revoke family role codes.
+- Editors can add/update profiles and analyze or attach documents. Profile
+  restrictions apply to some operations; see the security note below before
+  relying on them for profile-level isolation.
+- Viewers can view and listen but cannot upload or modify records.
+
+### E. Ask a question or listen
+
+1. Select the family member whose report history should be used.
+2. Open **Ask Health AI**, enter a health question, and choose whether to use
+   past report context.
+3. The app may retrieve up to three reports for that member, sends the question
+   and selected context to Gemini, and returns an educational answer.
+4. Use the speech controls to request streamed MP3 audio. Audio is held in a
+   small in-memory cache; the app does not write speech files to disk.
+
+Questions and speech requests require a valid invite code. Per-household
+rolling 24-hour limits are 30 questions and 30 speech requests; relevant API
+routes also have a 20-per-IP-per-minute rate limit. Q&A text is not stored as a
+chat transcript; the database records action counts for quota enforcement.
 
 ## API reference
 
-All API routes use the `/api/v1` prefix. Detailed schemas are available through
-FastAPI's `/docs` page.
+All API routes use `/api/v1`. Except `/healthz` and the page/static routes,
+protected API calls require the `X-Invite-Code` header. Open `/docs` for full
+request and response schemas.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/v1/analyze-report` | Analyze one or more reports. Multipart form fields: `files` (repeatable), `member_id` (default `self`), and `language` (default `English`). |
-| `POST` | `/api/v1/analyze-prescription` | Analyze prescription/medicine files; same multipart fields as report analysis. |
-| `POST` | `/api/v1/vault/members` | Create or update a family member profile. JSON body follows `FamilyMemberCreate`. |
-| `GET` | `/api/v1/vault/members` | List family members. |
-| `GET` | `/api/v1/vault/members/{member_id}/timeline` | Get a member's saved reports/timeline. |
-| `GET` | `/api/v1/vault/records/{report_id}` | Retrieve a saved report; optional `language` query parameter. |
-| `POST` | `/api/v1/vault/records/{report_id}/translate` | Translate a saved report; optional `language` query parameter (default `English`). |
-| `DELETE` | `/api/v1/vault/records/{report_id}` | Delete a saved report. |
-| `POST` | `/api/v1/ask-question` | Ask a health question. JSON body follows `DirectQuestionRequest`. |
-| `POST` | `/api/v1/speak` | Generate speech. JSON body follows `SpeakRequest`; returns an audio filename and playback URL. |
-| `GET` | `/api/v1/audio/{filename}` | Play/download a generated MP3. |
-| `GET` | `/api/v1/training-dataset/export` | Export saved report text and analysis as a training dataset. |
+| `GET` | `/api/v1/auth/me` | Validate an invite/role code and return its role and profile scope. |
+| `GET` | `/api/v1/vault/roles` | List household roles; owner only. |
+| `POST` | `/api/v1/vault/roles` | Create an editor/viewer share code; owner only. |
+| `DELETE` | `/api/v1/vault/roles/{role_id}` | Revoke a non-owner role code; owner only. |
+| `POST` | `/api/v1/analyze-report` | Analyze multipart `files`, `member_id`, `language`, `privacy_consent`, and `save_to_vault`. |
+| `POST` | `/api/v1/analyze-prescription` | Analyze prescription files; same form fields as report analysis. |
+| `POST` | `/api/v1/vault/records/{report_id}/attach-prescription` | Analyze and attach prescription files to a saved report. |
+| `POST` | `/api/v1/vault/members` | Create/update a family profile; JSON body follows `FamilyMemberCreate`. |
+| `GET` | `/api/v1/vault/members` | List profiles accessible to the current role. |
+| `GET` | `/api/v1/vault/members/{member_id}/timeline` | Get a profile's report timeline. |
+| `GET` | `/api/v1/vault/records/{report_id}` | Get a saved report; optional `language` query parameter. |
+| `POST` | `/api/v1/vault/records/{report_id}/translate` | Translate a saved report; `language` query parameter defaults to English. |
+| `GET` | `/api/v1/vault/records/{report_id}/files/{file_id}` | Decrypt and return an authorized saved file. |
+| `DELETE` | `/api/v1/vault/records/{report_id}` | Delete a report and its encrypted files; owner only. |
+| `POST` | `/api/v1/ask-question` | Ask a health question; JSON body follows `DirectQuestionRequest`. |
+| `POST` | `/api/v1/speak` | Return streamed `audio/mpeg`; JSON body follows `SpeakRequest`. |
 
-The frontend pages are served at `/`, `/login`, `/dashboard`, `/about`, and
-`/contact`. Static frontend files are available under `/assets` and `/static`;
-original uploaded files are served under `/vault-files`.
+The website pages are `/`, `/login`, `/dashboard`, `/about`, and `/contact`.
+Static frontend assets are served under `/assets` and `/static`.
 
-### Request model notes
+### Request fields
 
-- `SpeakRequest`: `text` is required; `language` defaults to `English`.
-- `DirectQuestionRequest`: `question` is required; `member_id` defaults to
-  `self`, `language` defaults to `English`, and `use_past_history` defaults to
-  `true`.
-- `FamilyMemberCreate`: `member_id` and `display_name` are required.
-  Relationship defaults to `Self`; age, gender, blood group, and known
-  conditions are optional.
+- **Report and prescription analysis**: multipart `files` (repeatable),
+  `member_id` (default `self`), `language` (default `English`),
+  `privacy_consent` (must be true), and `save_to_vault` (default true).
+- **Attach prescription**: multipart `files` and `language`; the parent
+  `report_id` is in the URL.
+- **FamilyMemberCreate**: required `member_id` and `display_name`; optional
+  `relationship`, `age`, `gender`, `blood_group`, and `known_conditions`.
+- **RoleCodeCreate**: required `share_code` and `label`; `role` must be
+  `editor` or `viewer`; `allowed_member_id` can be `*` or a profile ID.
+- **DirectQuestionRequest**: required `question`; `member_id` defaults to
+  `self`, `language` to `English`, and `use_past_history` to true.
+- **SpeakRequest**: required `text`; `language` defaults to `English`.
 
-Invalid uploads/questions and missing report records return HTTP errors with a
-detail message. Uploads are limited to 10 files per request; accepted file
-extensions are PDF, JPG, JPEG, PNG, and WEBP.
+## Data and privacy
 
-## Data model
+The database contains:
 
-The SQLAlchemy models in `app/db/models.py` define:
+- **`vault_access_roles`**: a hash of each role code, household and access
+  scope, plus the wrapped vault key. The raw invite/share code is not stored in
+  this table.
+- **`family_members`**: household/profile IDs, display name, relationship,
+  age, gender, blood group, and known conditions.
+- **`medical_reports`**: household/profile IDs, report ID, dates, document hash,
+  file metadata, language, encrypted report content/translations/attached
+  prescriptions, and an embedding.
+- **`qa_training_logs`**: household, action type, and timestamp used for
+  question/speech quotas; this is not a stored conversation transcript.
 
-- **`family_members`**: member ID, display name, relationship, optional profile
-  details, and creation timestamp.
-- **`medical_reports`**: report/member IDs, upload date, document hash,
-  original-file metadata, language, demographics, scrubbed extracted text,
-  AI analysis, translations, and embedding.
-- **`qa_training_logs`**: member ID, timestamp, language, question, and AI
-  response.
+Report content and saved original files are encrypted with Fernet using a
+household vault key derived/unwrapped using the invite code. This should not be
+interpreted as end-to-end security for the entire system: some database
+metadata (including profile details, filenames/file metadata, timestamps,
+document hashes, and embeddings) is not encrypted by this application. The
+embedding is derived from report content and should also be treated as
+sensitive.
 
-Database rows do not contain the original file bytes; those are written to the
-`vault_uploads/` directory and referenced by file URLs in the report metadata.
+Selected identifiers are scrubbed locally before document text is sent to
+Gemini, but regular-expression scrubbing is not guaranteed anonymization.
+Gemini receives cleaned document text for analysis and may receive text to
+create embeddings; Q&A sends the question and any selected report context.
+Speech requests send the requested text to Edge TTS. Review provider terms,
+privacy rules, and data-processing requirements before using real health data.
 
-## Privacy and deployment considerations
+The browser stores the invite code in `localStorage` to authenticate API
+requests. Protect access to the browser and device; logging out clears the
+stored code. The app uses shared role codes rather than a full user account,
+password reset, or identity-verification system. Treat role codes as
+credentials. Member-specific role restrictions are not enforced consistently
+across every report endpoint, so do not treat them as a security boundary
+between family profiles without reviewing and testing those access paths.
 
-- The application performs its configured PII scrubbing before sending cleaned
-  document text to Gemini. This should not be treated as a guarantee of
-  anonymization; inspect the scrubber and your privacy obligations before use.
-- Uploaded originals and report/Q&A data are persisted locally or in the
-  configured database. Deleting a report through the API deletes the database
-  record; verify separately how files and backups are handled in your
-  deployment.
-- Gemini requests send text to Google's API. Speech generation uses Edge TTS.
-  Review each provider's terms and privacy requirements before processing
-  sensitive health information.
-- The current sign-in page stores a display profile in browser `localStorage`;
-  it does not authenticate users with the backend or enforce per-user access
-  control. The API currently has permissive CORS configuration. Do not expose
-  this development application publicly or use it for real patient data without
-  implementing and reviewing authentication, authorization, transport
-  security, data retention, and deployment controls.
-- The training dataset export includes stored report text and AI output. Protect
-  that endpoint and any exported data appropriately.
-- This project has no configured test command or test suite in the current
-  repository.
+Deletion is owner-only and removes a report database row plus the encrypted
+files referenced by that row. It does not erase backups, logs, database
+snapshots, or other copies. Define retention and backup policies for your
+deployment.
 
 ## Troubleshooting
 
-- **Gemini calls fail:** check that `GEMINI_API_KEY` is configured, reachable,
-  and permitted to use the selected models. An optional
-  `GEMINI_MODEL_CHAIN` can configure model fallback order.
-- **Database connection fails:** verify `DATABASE_URL`, the database server,
-  and the installed DB driver. SQLite is the default and does not require a
-  separate database server.
-- **A PDF/image is rejected or has poor results:** check that the file is a
-  supported type and that text is legible. Scanned documents depend on OCR
-  quality; try a clearer image or PDF.
-- **Frontend pages or local files are missing:** start the server from the
-  project directory so relative paths resolve correctly.
-- **Schema changes are not reflected:** `create_all()` only creates missing
-  tables; it does not update existing tables in general. Use reviewed Alembic
-  migrations and back up the database first.
+- **Server reports missing `DATABASE_URL`:** add it to `.env` or the process
+  environment, then restart from the project directory.
+- **Invite code is rejected:** check the configured owner code or ask the
+  household owner for a current role code. Confirm the same database and
+  `SECRET_SALT` are being used.
+- **A user cannot upload or modify a profile:** check whether the code is
+  viewer-only or restricted to a different profile.
+- **Daily limit or rate limit is reached:** wait for the applicable rolling
+  limit to expire.
+- **Gemini analysis fails:** confirm `GEMINI_API_KEY`, network access, and
+  model availability. `GEMINI_MODEL_CHAIN` can configure model fallback order.
+- **File upload is rejected:** verify it is a genuine PDF/JPG/JPEG/PNG/WEBP
+  file, is no larger than 10 MB, and that no more than 5 files or 5 total pages
+  across the request are being submitted.
+- **A saved original will not open:** make sure the encrypted file directory
+  and database are from the same backup and the same invite code and
+  `SECRET_SALT` are in use.
+- **A schema change is missing:** apply the reviewed Alembic revision with
+  `uv run alembic upgrade head`; `create_all()` does not update existing
+  columns in general.
+
+## Deployment checklist
+
+- Use strong, unique owner/share codes and a cryptographically random,
+  persistent `SECRET_SALT`.
+- Set production `DATABASE_URL`, `GEMINI_API_KEY`, and `ALLOWED_ORIGINS`.
+- Run Alembic migrations during deployment before serving traffic.
+- Use HTTPS and a supported PostgreSQL deployment with `pgvector` if using
+  PostgreSQL.
+- Persist and back up the database, `vault_uploads/`, and configuration needed
+  to unlock the vault; restrict backup access.
+- Do not deploy the example/default development credentials or expose a
+  development server publicly.
+- Review authentication, access controls, retention, privacy, and medical
+  regulatory requirements before processing real patient data.
