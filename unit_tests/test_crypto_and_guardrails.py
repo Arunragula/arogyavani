@@ -1,8 +1,12 @@
 # tests/test_crypto_and_guardrails.py
+import os
 import io
 import pytest
 from PIL import Image
 from fastapi import HTTPException
+
+# Ensure SECRET_SALT is set (>=16 chars) before importing crypto_vault
+os.environ.setdefault("SECRET_SALT", "ci-test-production-salt-2026-secure")
 
 from app.services.crypto_vault import (
     derive_fernet_key_from_code,
@@ -15,35 +19,44 @@ from app.services.crypto_vault import (
 from app.services.guardrails import (
     enforce_question_guardrail_precheck,
     enforce_extracted_text_guardrail,
+    enforce_ai_output_guardrail,
 )
 
 
-def test_zero_knowledge_encryption_and_role_key_wrapping():
-    """Verifies that encrypted vault data cannot be read without the user's secret code."""
-    owner_code = "ARUN-FAMILY-2026"
-    viewer_code = "MOM-VIEW-2026"
-    wrong_code = "HACKER-CODE-999"
+def test_encryption_at_rest_and_role_key_wrapping():
+    """
+    Verifies that encrypted vault data cannot be decrypted with a wrong key
+    (raises ValueError instead of silently returning {}), and role key wrapping works.
+    """
+    owner_code = "TEST-OWNER-LONG-CODE-2026"
+    viewer_code = "SERVER-GENERATED-SHARE-TOKEN-12345"
+    wrong_code = "HACKER-WRONG-CODE-999999"
 
     master_key = derive_fernet_key_from_code(f"master:{owner_code}")
     secret_report = {"item": "Hemoglobin", "your_value": "13.6 g/dL"}
 
-    # Encrypt report
+    # 1. Encrypt report
     ciphertext = encrypt_json_with_key(secret_report, master_key)
     assert "Hemoglobin" not in ciphertext
     assert "13.6" not in ciphertext
 
-    # Owner can decrypt
+    # 2. Owner can decrypt
     decrypted = decrypt_json_with_key(ciphertext, master_key)
     assert decrypted["your_value"] == "13.6 g/dL"
 
-    # Wrong key returns empty dict (cannot read data!)
+    # 3. P1 #10 Fix: Wrong key MUST raise ValueError (never silently return {})
     wrong_key = derive_fernet_key_from_code(f"master:{wrong_code}")
-    assert decrypt_json_with_key(ciphertext, wrong_key) == {}
+    with pytest.raises(ValueError):
+        decrypt_json_with_key(ciphertext, wrong_key)
 
-    # Envelope wrapping for Mom's Viewer role code works
-    wrapped_for_mom = wrap_vault_key_for_role_code(master_key, viewer_code)
-    unwrapped_by_mom = unwrap_vault_key_with_role_code(wrapped_for_mom, viewer_code)
-    assert decrypt_json_with_key(ciphertext, unwrapped_by_mom)["item"] == "Hemoglobin"
+    # 4. Envelope wrapping for a Viewer role code works
+    wrapped_for_viewer = wrap_vault_key_for_role_code(master_key, viewer_code)
+    unwrapped_by_viewer = unwrap_vault_key_with_role_code(wrapped_for_viewer, viewer_code)
+    assert decrypt_json_with_key(ciphertext, unwrapped_by_viewer)["item"] == "Hemoglobin"
+
+    # 5. Wrong code cannot unwrap the role key
+    with pytest.raises(ValueError):
+        unwrap_vault_key_with_role_code(wrapped_for_viewer, wrong_code)
 
 
 def test_image_compression_shrinks_large_photo_to_webp():
@@ -81,6 +94,14 @@ def test_guardrails_block_non_medical_questions_and_documents():
         enforce_extracted_text_guardrail(resume_text, "lab_report")
     assert exc3.value.status_code == 400
 
-    # 4. Valid blood report OCR text passes
-    blood_text = "Haemoglobin 13.6 g/dL | Creatinine 0.8 mg/dL | Blood Pressure 120/80 | NAD"
+    # 4. Valid blood report OCR text passes (even when OCR glues words like Haemoglobing/dL)
+    blood_text = "Haemoglobing/dL 13.6 | Creatinine 0.8 mg/dL | Bloodpressure 120/80 | NAD"
     enforce_extracted_text_guardrail(blood_text, "lab_report")
+
+    # 5. Post-AI guardrail rejects explicit non-medical flag when no tests exist
+    with pytest.raises(HTTPException) as exc4:
+        enforce_ai_output_guardrail(
+            {"is_medical_related": False, "rejection_reason": "Not a medical document."},
+            mode="lab_report",
+        )
+    assert exc4.value.status_code == 400

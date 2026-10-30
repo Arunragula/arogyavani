@@ -1,5 +1,6 @@
-# tests/test_api_integration.py
+
 import os
+import pytest
 os.environ["INVITE_CODES"] = "TEST-OWNER-LONG-CODE-2026,SECOND-HOUSEHOLD-LONG-CODE"
 os.environ["SECRET_SALT"] = "ci-test-production-salt-2026-secure"
 
@@ -7,10 +8,14 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.auth_limiter import _FAILED_ATTEMPTS
 
-client = TestClient(app)
+
+@pytest.fixture(scope="module")
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
 
 
-def test_family_vault_role_assignment_and_viewer_restrictions():
+def test_family_vault_role_assignment_and_viewer_restrictions(client):
     _FAILED_ATTEMPTS.clear()
     owner_headers = {"X-Invite-Code": "TEST-OWNER-LONG-CODE-2026"}
 
@@ -42,7 +47,7 @@ def test_family_vault_role_assignment_and_viewer_restrictions():
     assert res_ask_dad.status_code == 403
 
 
-def test_brute_force_invite_code_lockout():
+def test_brute_force_invite_code_lockout(client):
     """P0 #1: 5 wrong invite codes must trigger a 429 lockout on the 6th attempt."""
     _FAILED_ATTEMPTS.clear()
     for _ in range(5):
